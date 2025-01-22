@@ -1,0 +1,39 @@
+{
+  "name": "pesakit",
+  "version": "1.0.0",
+  "main": "index.js",
+  "types": "pesakit.d.ts",
+  "scripts": {
+    "test": "jest",
+    "build": "npm run lint && npm test",
+    "lint": "eslint .",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "pesapal",
+    "payment",
+    "integration",
+    "nodejs"
+  ],
+  "author": "Leon Kalema",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.2",
+    "axios-retry": "^3.9.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "@types/jest": "^29.5.8",
+    "axios-mock-adapter": "^1.22.0",
+    "eslint": "^8.56.0",
+    "eslint-config-airbnb-base": "^15.0.0",
+    "eslint-plugin-import": "^2.25.4"
+  },
+  "files": [
+    "index.js",
+    "pesakit.d.ts"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
