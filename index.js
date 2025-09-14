@@ -1,26 +1,22 @@
-const axios = require('axios');
-const axiosRetry = require('axios-retry').default || require('axios-retry');
-const { Buffer } = require('buffer');
+import axios from 'axios';
+import axiosRetry from 'axios-retry';
+import crypto from 'crypto';
 
 // Import production-ready modules
-const Logger = require('./lib/logger');
-const { TokenCache } = require('./lib/cache');
-const crypto = require('crypto');
-const SecurityUtils = require('./lib/security');
-const PesakitCircuitBreaker = require('./lib/circuit-breaker');
-const { RateLimiter } = require('./lib/rate-limiter');
-const { MetricsCollector, HealthChecker } = require('./lib/monitoring');
-const { validators } = require('./schemas/validation');
-const {
-  PesakitError,
+import Logger from './lib/logger.js';
+import { TokenCache } from './lib/cache.js';
+import SecurityUtils from './lib/security.js';
+import PesakitCircuitBreaker from './lib/circuit-breaker.js';
+import { RateLimiter } from './lib/rate-limiter.js';
+import { MetricsCollector, HealthChecker } from './lib/monitoring.js';
+import { validators } from './schemas/validation.js';
+import {
   AuthenticationError,
   ValidationError,
   PaymentError,
   NetworkError,
-  RateLimitError,
-  SignatureError,
-  ConfigurationError
-} = require('./lib/errors');
+  SignatureError
+} from './lib/errors.js';
 
 /**
  * Production-ready Pesapal API client with enterprise features
@@ -56,13 +52,15 @@ class Pesakit {
       encryptionKey
     });
 
-    // Initialize circuit breaker
+    // Initialize circuit breaker for resilience
     this.circuitBreaker = new PesakitCircuitBreaker({
       timeout: this.config.timeout,
-      name: 'pesakit-api'
+      errorThresholdPercentage: 50,
+      resetTimeout: 60000,
+      volumeThreshold: 5,
+      enabled: this.config.environment !== 'test'
     });
 
-    // Initialize rate limiter
     this.rateLimiter = new RateLimiter({
       strategy: 'token-bucket',
       requests: 100, // 100 requests per minute
@@ -166,20 +164,14 @@ class Pesakit {
       this.metrics.increment('auth.cache_miss');
       this.logger.info('Requesting new OAuth token', { correlationId: this.correlationId });
 
-      // Create authentication string
-      const authString = Buffer.from(
-        `${this.config.consumerKey}:${this.config.consumerSecret}`
-      ).toString('base64');
-
       // Make authenticated request through circuit breaker
       const response = await this.circuitBreaker.protect(
         'auth',
-        this.makeAuthRequest.bind(this),
-        authString
+        this.makeAuthRequest.bind(this)
       );
 
       const token = response.data.token;
-      const expiresIn = response.data.expires_in || 3600;
+      const expiresIn = 300; // PesaPal API 3.0 tokens expire in 5 minutes
 
       // Cache the token securely
       this.tokenCache.setToken(this.config.consumerKey, token, expiresIn);
@@ -216,15 +208,18 @@ class Pesakit {
   }
 
   /**
-   * Make authentication request
+   * Make authentication request using PesaPal API 3.0
    */
-  async makeAuthRequest(authString) {
+  async makeAuthRequest() {
     return axios.post(
-      `${this.baseURL}/api/auth/request-token`,
-      {},
+      `${this.baseURL}/api/Auth/RequestToken`,
+      {
+        consumer_key: this.config.consumerKey,
+        consumer_secret: this.config.consumerSecret
+      },
       {
         headers: {
-          'Authorization': `Basic ${authString}`,
+          'Accept': 'application/json',
           'Content-Type': 'application/json',
           'User-Agent': 'Pesakit/2.0.0',
           'X-Correlation-ID': this.correlationId
@@ -255,6 +250,12 @@ class Pesakit {
       const rateLimitKey = `payment:${SecurityUtils.hashData(this.config.consumerKey)}`;
       await this.rateLimiter.isAllowed(rateLimitKey);
 
+      // Register IPN URL if not provided
+      if (!validatedData.notificationId) {
+        const ipnUrl = validatedData.ipnUrl || validatedData.callbackUrl.replace('/callback', '/ipn');
+        validatedData.notificationId = await this.registerIpnUrl(ipnUrl, 'GET');
+      }
+
       // Get OAuth token
       const token = await this.getOAuthToken();
 
@@ -266,11 +267,15 @@ class Pesakit {
         validatedData
       );
 
-      const redirectUrl = response.data.redirect_url;
+      const result = {
+        orderTrackingId: response.data.order_tracking_id,
+        merchantReference: response.data.merchant_reference,
+        redirectUrl: response.data.redirect_url
+      };
       
       this.logger.info('Payment created successfully', {
         reference: validatedData.reference,
-        redirectUrl: redirectUrl ? 'provided' : 'missing',
+        orderTrackingId: result.orderTrackingId,
         correlationId: this.correlationId
       });
 
@@ -280,7 +285,7 @@ class Pesakit {
       });
 
       timer.end();
-      return redirectUrl;
+      return result;
 
     } catch (error) {
       timer.end();
@@ -316,15 +321,98 @@ class Pesakit {
   }
 
   /**
-   * Make payment request
+   * Register IPN URL with PesaPal API 3.0
    */
-  async makePaymentRequest(token, paymentData) {
+  async registerIpnUrl(ipnUrl, notificationType = 'GET') {
+    const timer = this.metrics.startTimer('ipn.register');
+    
+    try {
+      this.logger.info('Registering IPN URL', {
+        url: ipnUrl,
+        notificationType,
+        correlationId: this.correlationId
+      });
+
+      const token = await this.getOAuthToken();
+
+      const response = await this.circuitBreaker.protect(
+        'ipn_register',
+        this.makeIpnRegistrationRequest.bind(this),
+        token,
+        ipnUrl,
+        notificationType
+      );
+
+      const ipnId = response.data.ipn_id;
+      
+      this.logger.info('IPN URL registered successfully', {
+        ipnId,
+        correlationId: this.correlationId
+      });
+
+      timer.end();
+      return ipnId;
+
+    } catch (error) {
+      timer.end();
+      this.logger.error('Failed to register IPN URL', error, {
+        correlationId: this.correlationId
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Make IPN registration request
+   */
+  async makeIpnRegistrationRequest(token, ipnUrl, notificationType) {
     return axios.post(
-      `${this.baseURL}/api/payments/submit-order`,
-      paymentData,
+      `${this.baseURL}/api/URLSetup/RegisterIPN`,
+      {
+        url: ipnUrl,
+        ipn_notification_type: notificationType
+      },
       {
         headers: {
           'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'User-Agent': 'Pesakit/2.0.0',
+          'X-Correlation-ID': this.correlationId
+        },
+        timeout: this.config.timeout
+      }
+    );
+  }
+
+  /**
+   * Make payment request using PesaPal API 3.0
+   */
+  async makePaymentRequest(token, paymentData) {
+    // Transform data to PesaPal API 3.0 format
+    const pesapalPayload = {
+      id: paymentData.reference,
+      currency: paymentData.currency,
+      amount: paymentData.amount,
+      description: paymentData.description,
+      callback_url: paymentData.callbackUrl,
+      notification_id: paymentData.notificationId,
+      billing_address: {
+        email_address: paymentData.email,
+        phone_number: paymentData.phoneNumber,
+        first_name: paymentData.firstName,
+        last_name: paymentData.lastName,
+        country_code: 'KE'
+      }
+    };
+
+    return axios.post(
+      `${this.baseURL}/api/Transactions/SubmitOrderRequest`,
+      pesapalPayload,
+      {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json',
           'Content-Type': 'application/json',
           'User-Agent': 'Pesakit/2.0.0',
           'X-Correlation-ID': this.correlationId
@@ -365,7 +453,7 @@ class Pesakit {
       );
 
       const verification = {
-        status: response.data.payment_status,
+        status: response.data.payment_status_description,
         method: response.data.payment_method,
         amount: response.data.amount,
         currency: response.data.currency,
@@ -422,15 +510,16 @@ class Pesakit {
   }
 
   /**
-   * Make verification request
+   * Make verification request using PesaPal API 3.0
    */
   async makeVerificationRequest(token, orderTrackingId) {
     return axios.get(
-      `${this.baseURL}/api/transactions/get-transaction-status`,
+      `${this.baseURL}/api/Transactions/GetTransactionStatus`,
       {
         params: { orderTrackingId },
         headers: {
           'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json',
           'Content-Type': 'application/json',
           'User-Agent': 'Pesakit/2.0.0',
           'X-Correlation-ID': this.correlationId
@@ -626,4 +715,4 @@ class Pesakit {
   }
 }
 
-module.exports = Pesakit;
+export default Pesakit;

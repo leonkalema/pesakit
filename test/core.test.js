@@ -50,6 +50,10 @@ describe('Pesakit Core Functionality', () => {
     mock.reset();
   });
 
+  afterAll(() => {
+    mock.restore();
+  });
+
   test('should get OAuth token', async () => {
     const client = new Pesakit(merchants.kenya);
     mock.onPost('https://pay.pesapal.com/v3/api/auth/request-token')
@@ -57,16 +61,17 @@ describe('Pesakit Core Functionality', () => {
 
     const token = await client.getOAuthToken();
     expect(token).toBe('test_token');
+    client.destroy();
   });
 
-    test('should create payment request', async () => {
-      const client = new Pesakit(merchants.kenya);
-      mock.onPost('https://pay.pesapal.com/v3/api/auth/request-token')
-        .reply(200, { token: 'test_token' });
-      mock.onPost('https://pay.pesapal.com/v3/api/urlsetup/register-ipn')
-        .reply(200, { ipn_id: '123' });
-      mock.onPost('https://pay.pesapal.com/v3/api/payments/submit-order')
-        .reply(200, { redirect_url: 'https://payment.link' });
+  test('should create payment request', async () => {
+    const client = new Pesakit(merchants.kenya);
+    mock.onPost('https://pay.pesapal.com/v3/api/auth/request-token')
+      .reply(200, { token: 'test_token' });
+    mock.onPost('https://pay.pesapal.com/v3/api/urlsetup/register-ipn')
+      .reply(200, { ipn_id: '123' });
+    mock.onPost('https://pay.pesapal.com/v3/api/payments/submit-order')
+      .reply(200, { redirect_url: 'https://payment.link' });
 
     const paymentUrl = await client.createPayment({
       amount: 1000,
@@ -77,6 +82,7 @@ describe('Pesakit Core Functionality', () => {
     });
 
     expect(paymentUrl).toBe('https://payment.link');
+    client.destroy();
   });
 
   test('should verify payment status', async () => {
@@ -94,6 +100,7 @@ describe('Pesakit Core Functionality', () => {
     const status = await client.verifyPayment('ORDER-123');
     expect(status.status).toBe('COMPLETED');
     expect(status.method).toBe('M-PESA');
+    client.destroy();
   });
 
   test('should validate IPN signature', async () => {
@@ -118,5 +125,6 @@ describe('Pesakit Core Functionality', () => {
 
     await ipnHandler(mockReq, mockRes, jest.fn());
     expect(mockRes.status).toHaveBeenCalledWith(401);
+    client.destroy();
   });
 });

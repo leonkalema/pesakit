@@ -1,4 +1,5 @@
-const Joi = require('joi');
+import Joi from 'joi';
+import { ValidationError } from '../lib/errors.js';
 
 /**
  * Comprehensive validation schemas for all Pesakit operations
@@ -49,6 +50,14 @@ const paymentDataSchema = Joi.object({
     }),
   
   currency: Joi.string().valid('KES', 'UGX', 'TZS', 'RWF', 'MWK', 'ZMW', 'ZWL', 'USD').default('KES'),
+
+  // PesaPal API: one of these is required by downstream logic. We allow both here; business logic decides which to use
+  notificationId: Joi.string()
+    .guid({ version: ['uuidv4', 'uuidv5'] })
+    .optional(),
+  ipnUrl: Joi.string()
+    .uri({ scheme: ['http', 'https'] })
+    .optional(),
   
   firstName: Joi.string().min(1).max(50).optional()
     .pattern(/^[a-zA-Z\s\-']+$/),
@@ -113,7 +122,6 @@ const validateConfig = (config) => {
       message: detail.message,
       value: detail.context?.value
     }));
-    const { ValidationError } = require('../lib/errors');
     throw new ValidationError(`Configuration validation failed: ${JSON.stringify(details)}`);
   }
   
@@ -132,7 +140,6 @@ const validatePaymentData = (data) => {
       message: detail.message,
       value: detail.context?.value
     }));
-    const { ValidationError } = require('../lib/errors');
     throw new ValidationError(`Payment data validation failed: ${JSON.stringify(details)}`);
   }
   
@@ -143,7 +150,6 @@ const validateOrderTrackingId = (id) => {
   const { error, value } = orderTrackingIdSchema.validate(id);
   
   if (error) {
-    const { ValidationError } = require('../lib/errors');
     throw new ValidationError(`Order tracking ID validation failed: ${error.message}`);
   }
   
@@ -162,7 +168,6 @@ const validateIpnData = (data) => {
       message: detail.message,
       value: detail.context?.value
     }));
-    const { ValidationError } = require('../lib/errors');
     throw new ValidationError(`IPN data validation failed: ${JSON.stringify(details)}`);
   }
   
@@ -173,26 +178,24 @@ const validateSignature = (data) => {
   const { error, value } = signatureValidationSchema.validate(data);
   
   if (error) {
-    const { ValidationError } = require('../lib/errors');
     throw new ValidationError(`Signature validation failed: ${error.message}`);
   }
   
   return value;
 };
 
-module.exports = {
-  schemas: {
-    configSchema,
-    paymentDataSchema,
-    orderTrackingIdSchema,
-    ipnDataSchema,
-    signatureValidationSchema
-  },
-  validators: {
-    validateConfig,
-    validatePaymentData,
-    validateOrderTrackingId,
-    validateIpnData,
-    validateSignature
-  }
+export const schemas = {
+  configSchema,
+  paymentDataSchema,
+  orderTrackingIdSchema,
+  ipnDataSchema,
+  signatureValidationSchema
+};
+
+export const validators = {
+  validateConfig,
+  validatePaymentData,
+  validateOrderTrackingId,
+  validateIpnData,
+  validateSignature
 };

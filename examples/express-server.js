@@ -133,16 +133,16 @@ app.post('/api/payments/webhook', pesakit.createIpnHandler({
 }));
 
 // Error handling middleware
-app.use((error, req, res, next) => {
-  console.error('Unhandled error:', error);
+app.use((err, req, res, _next) => {
+  console.error('Unhandled error:', err);
   
-  res.status(error.statusCode || 500).json({
+  res.status(err.statusCode || 500).json({
     success: false,
-    error: error.name || 'InternalServerError',
+    error: err.name || 'InternalServerError',
     message: process.env.NODE_ENV === 'production' 
       ? 'An internal server error occurred' 
-      : error.message,
-    correlation_id: error.correlationId || req.headers['x-correlation-id']
+      : err.message,
+    correlation_id: err.correlationId || req.headers['x-correlation-id']
   });
 });
 
