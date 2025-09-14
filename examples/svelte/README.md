@@ -1,21 +1,21 @@
-# PesaKit Svelte Example
+# PesaKit SvelteKit Integration Example
 
-A production-ready Svelte application demonstrating seamless PesaPal integration with modern web technologies.
+A complete working example of PesaPal integration using SvelteKit with iframe checkout, callback handling, and status polling.
 
 ## 🚀 Features
 
-- **Modular Components**: Each component is under 400 lines, following senior-level development practices
-- **TypeScript First**: Comprehensive type safety with Zod validation
-- **Tailwind CSS**: Beautiful, responsive design with custom animations
-- **Production Ready**: Error handling, loading states, and user feedback
-- **Real-time Updates**: Payment status polling and verification
-- **Accessible**: WCAG compliant forms and interactions
+- **Server-side PesaPal Integration**: Secure credential handling with `pesakit@2.0.5`
+- **Iframe Checkout Modal**: Seamless payment experience without leaving your app
+- **PostMessage Communication**: Automatic callback detection and modal closure
+- **Status Polling**: Real-time payment verification with terminal state detection
+- **TypeScript + Zod**: Full type safety and input validation
+- **Production Ready**: HTTPS, error handling, correlation IDs
 
 ## 📋 Prerequisites
 
-- Node.js 18+ (LTS recommended)
-- npm, pnpm, or yarn
-- PesaPal merchant account (for production use)
+- Node.js 18+
+- PesaPal merchant account with consumer key/secret
+- Public HTTPS URL for IPN callbacks (use ngrok for development)
 
 ## 🛠️ Quick Start
 
@@ -24,15 +24,16 @@ A production-ready Svelte application demonstrating seamless PesaPal integration
    npm install
    ```
 
-2. **Set up your PesaPal credentials:**
+2. **Configure environment:**
    ```bash
    cp .env.example .env
    ```
-   Edit `.env` with your actual PesaPal credentials:
+   Edit `.env`:
    ```bash
-   PESAPAL_CONSUMER_KEY=your_actual_consumer_key
-   PESAPAL_CONSUMER_SECRET=your_actual_consumer_secret
-   PESAPAL_ENVIRONMENT=sandbox
+   PESAPAL_CONSUMER_KEY=your_consumer_key
+   PESAPAL_CONSUMER_SECRET=your_consumer_secret
+   PESAPAL_ENVIRONMENT=production  # or sandbox
+   PESAPAL_IPN_URL=https://yourdomain.com/api/payments/ipn
    ```
 
 3. **Run the app:**
@@ -40,7 +41,7 @@ A production-ready Svelte application demonstrating seamless PesaPal integration
    npm run dev
    ```
 
-That's it! Open `http://localhost:5173` and start creating payments.
+Open `http://localhost:5175` and test the payment flow.
 
 ## 🧭 SvelteKit Integration Guide
 
@@ -127,83 +128,95 @@ This example is production-ready when deployed to a server environment (Vercel/N
 ```
 src/
 ├── lib/
-│   ├── components/           # Reusable UI components
-│   │   ├── LoadingSpinner.svelte
-│   │   ├── Notification.svelte
-│   │   ├── PaymentCard.svelte
-│   │   ├── PaymentForm.svelte
-│   │   └── PaymentStatus.svelte
-│   ├── services/            # Business logic services
-│   │   └── payment-service.ts
-│   └── types.ts            # TypeScript definitions
+│   └── types.ts            # TypeScript definitions and sample products
 ├── routes/
-│   ├── api/                # API endpoints
-│   │   ├── payments/
-│   │   └── health/
-│   ├── payment/            # Payment flow pages
-│   ├── status/             # Status checking
-│   └── +page.svelte        # Home page
-└── app.css                 # Global styles
+│   ├── api/payments/       # Server-side payment endpoints
+│   │   ├── create/+server.ts    # Creates payment via pesakit
+│   │   ├── callback/+server.ts  # Handles PesaPal redirect
+│   │   └── status/+server.ts    # Checks payment status
+│   └── +page.svelte        # Main page with payment form and iframe modal
+└── app.css                 # Tailwind CSS styles
 ```
 
-## 🎯 Usage Examples
+## 🎯 How It Works
 
-### Basic Payment Creation
+### 1. Payment Creation Flow
+
+The main page (`+page.svelte`) contains:
+- Product selection (Basic/Premium/Enterprise plans)
+- Customer info form (name, email, phone)
+- Payment button that calls `/api/payments/create`
 
 ```typescript
-import { paymentService } from '$lib/services/payment-service.js';
+// Frontend: Submit payment data
+const response = await fetch('/api/payments/create', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    amount: selectedProduct.amount,
+    currency: 'KES',
+    description: selectedProduct.description,
+    reference: `ORDER-${Date.now()}`,
+    email: customerInfo.email,
+    firstName: customerInfo.firstName,
+    lastName: customerInfo.lastName,
+    phoneNumber: customerInfo.phone,
+    callbackUrl: `${window.location.origin}/api/payments/callback`
+  })
+});
 
-const paymentData = {
-  amount: 1000,
-  description: 'Premium subscription',
-  reference: 'ORDER-12345',
-  email: 'customer@example.com',
-  firstName: 'John',
-  lastName: 'Doe',
-  phoneNumber: '+254712345678',
-  currency: 'KES',
-  callbackUrl: 'https://yourapp.com/payment/callback'
-};
-
-const response = await paymentService.createPayment(paymentData);
-if (response.success) {
-  window.location.href = response.paymentUrl;
+// Server response includes redirectUrl for PesaPal checkout
+if (result.success) {
+  // Open iframe modal with PesaPal checkout
+  iframeUrl = result.redirectUrl;
+  showIframe = true;
 }
 ```
 
-### Payment Status Verification
+### 2. Server Endpoints
+
+**`/api/payments/create/+server.ts`**
+- Validates input with Zod
+- Uses `pesakit` to authenticate and create payment
+- Auto-discovers/registers IPN URL if needed
+- Returns `{ success, orderTrackingId, redirectUrl }`
+
+**`/api/payments/callback/+server.ts`**
+- Receives PesaPal redirect with `OrderTrackingId`
+- Renders HTML page that posts message to parent window
+- Enables automatic iframe closure
+
+**`/api/payments/status/+server.ts`**
+- Accepts `orderTrackingId` query parameter
+- Calls PesaPal `GetTransactionStatus` endpoint
+- Returns payment status and details
+
+### 3. Iframe Modal & Status Polling
 
 ```typescript
-const verification = await paymentService.verifyPayment('ORDER-12345');
-console.log('Payment Status:', verification.verification?.status);
+// Listen for callback message from iframe
+function onMessage(e: MessageEvent) {
+  const msg = e?.data as any;
+  if (msg?.type === 'pesapal:callback' && msg.orderTrackingId) {
+    showIframe = false;  // Close iframe
+    pollStatus(msg.orderTrackingId);  // Start polling
+  }
+}
+
+// Poll status until terminal state
+async function pollStatus(orderTrackingId: string) {
+  for (let i = 0; i < 10; i++) {
+    const res = await fetch(`/api/payments/status?orderTrackingId=${orderTrackingId}`);
+    const data = await res.json();
+    
+    if (data.paymentStatusDescription === 'COMPLETED') {
+      paymentStatus = `Payment COMPLETED. Ref: ${data.merchantReference}`;
+      return;
+    }
+    await new Promise(r => setTimeout(r, 1500));  // Wait 1.5s
+  }
+}
 ```
-
-### Real-time Status Polling
-
-```typescript
-const result = await paymentService.pollPaymentStatus('ORDER-12345', 30, 2000);
-// Polls every 2 seconds for up to 30 attempts
-```
-
-## 🧩 Component Architecture
-
-### PaymentForm Component
-- Comprehensive form validation with Zod
-- Real-time error feedback
-- Responsive design with Tailwind CSS
-- Accessibility features (ARIA labels, keyboard navigation)
-
-### PaymentStatus Component
-- Real-time status updates
-- Visual status indicators
-- Action buttons based on payment state
-- Print receipt functionality
-
-### Notification System
-- Toast-style notifications
-- Multiple types (success, error, warning, info)
-- Auto-dismiss with manual override
-- Smooth animations
 
 ## 🔧 Configuration
 
@@ -215,18 +228,9 @@ PESAPAL_CONSUMER_KEY=your_production_key
 PESAPAL_CONSUMER_SECRET=your_production_secret
 PESAPAL_ENVIRONMENT=production
 
-# Optional
-LOG_LEVEL=info
-PAYMENT_TIMEOUT=30000
+# Optional - for debugging
+LOG_LEVEL=debug
 ```
-
-### Tailwind Configuration
-
-The project includes a comprehensive Tailwind setup with:
-- Custom color palette for payments
-- Animation utilities
-- Form plugin for better form styling
-- Responsive design utilities
 
 ## 🚀 Production Deployment
 
@@ -238,118 +242,69 @@ npm run build
 
 ### Environment Setup
 
-1. **Set production environment variables**
-2. **Configure your web server** to serve the built files
-3. **Set up SSL/TLS** for secure payment processing
-4. **Configure CORS** for your domain
+1. **Set production environment variables** in your hosting platform
+2. **Configure HTTPS** for callback and IPN URLs
+3. **Set up public IPN URL** (required for PesaPal webhooks)
 
 ### Deployment Options
 
-- **Vercel**: `npm i -g vercel && vercel`
-- **Netlify**: Connect your Git repository
-- **Docker**: Use the included Dockerfile
-- **Traditional hosting**: Upload the `build` directory
+- **Vercel**: Connect GitHub repo, set environment variables
+- **Netlify**: Connect GitHub repo, configure build settings
+- **Traditional VPS**: Upload build files, configure reverse proxy
 
-## 🧪 Testing
+## 🔒 Security Notes
 
-### Demo Mode
-The application includes demo functionality with mock responses:
-- Sample payment creation
-- Mock verification responses  
-- Simulated payment statuses
-
-### Test Order IDs
-- `DEMO-COMPLETED-12345` - Completed payment
-- `DEMO-PENDING-67890` - Pending payment
-- `DEMO-FAILED-11111` - Failed payment
-
-## 🔒 Security Features
-
-- **Input Validation**: Zod schema validation on all forms
-- **Type Safety**: Comprehensive TypeScript coverage
-- **Error Handling**: Graceful error states with user feedback
-- **Secure Communication**: HTTPS enforcement in production
-- **Data Sanitization**: Automatic sanitization of user inputs
-
-## 📱 Responsive Design
-
-The application is fully responsive with:
-- Mobile-first design approach
-- Touch-friendly interactions
-- Optimized layouts for all screen sizes
-- Progressive enhancement
-
-## 🎨 Customization
-
-### Styling
-- Modify `tailwind.config.js` for custom colors/spacing
-- Update `src/app.css` for global styles
-- Component-specific styles in individual `.svelte` files
-
-### Branding
-- Update colors in the Tailwind config
-- Replace logo and favicon in `src/lib/assets/`
-- Modify navigation and footer in `+layout.svelte`
+- **Never expose credentials**: `PESAPAL_CONSUMER_KEY/SECRET` stay server-side only
+- **HTTPS required**: Production callback/IPN URLs must use HTTPS
+- **Input validation**: All user inputs validated with Zod schemas
+- **Correlation IDs**: Every request tracked for debugging
 
 ## 🐛 Troubleshooting
 
 ### Common Issues
 
-1. **Build Errors**
-   ```bash
-   # Clear node_modules and reinstall
-   rm -rf node_modules package-lock.json
-   npm install
-   ```
+1. **IPN Registration 409 Error**
+   - Fixed in `pesakit@2.0.5` - update if using older version
+   - Ensure `PESAPAL_IPN_URL` is publicly accessible
 
-2. **TypeScript Errors**
-   ```bash
-   # Run type checking
-   npm run check
-   ```
+2. **Environment Variables Not Found**
+   - Server routes need `PESAPAL_*` (no `VITE_` prefix)
+   - Client code cannot access server environment variables
 
-3. **Styling Issues**
-   ```bash
-   # Rebuild Tailwind
-   npm run dev
-   ```
+3. **Iframe Not Opening**
+   - Check browser console for errors
+   - Verify `/api/payments/create` returns `redirectUrl`
 
 ### Debug Mode
-Set `LOG_LEVEL=debug` in your environment to enable detailed logging.
+Set `LOG_LEVEL=debug` to see detailed pesakit logs.
 
-## 📚 API Reference
+## 📚 Key Files
 
-### Payment Service Methods
-
-- `createPayment(data)` - Create a new payment
-- `verifyPayment(id)` - Verify payment status
-- `pollPaymentStatus(id, attempts, interval)` - Poll for status updates
-- `formatCurrency(amount, currency)` - Format currency display
-- `generateReference(prefix)` - Generate unique reference IDs
-
-### Component Props
-
-Detailed prop interfaces are available in `src/lib/types.ts` with full TypeScript support.
+- **`src/routes/+page.svelte`** - Main UI with payment form and iframe modal
+- **`src/routes/api/payments/create/+server.ts`** - Payment creation endpoint
+- **`src/routes/api/payments/callback/+server.ts`** - PesaPal redirect handler
+- **`src/routes/api/payments/status/+server.ts`** - Status checking endpoint
+- **`src/lib/types.ts`** - TypeScript definitions and sample products
 
 ## 🤝 Contributing
 
-1. Fork the repository
-2. Create a feature branch
-3. Follow the coding standards (max 400 lines per file)
-4. Add TypeScript types for all new code
-5. Test your changes thoroughly
-6. Submit a pull request
+This example demonstrates the complete PesaPal integration pattern. To extend:
+
+1. Add IPN webhook endpoint for real-time status updates
+2. Add database persistence for transaction history
+3. Add receipt/invoice generation
+4. Add email notifications
 
 ## 📄 License
 
-This example is part of the PesaKit project and follows the same MIT license.
+MIT License - part of the PesaKit project.
 
 ## 🆘 Support
 
-- **Documentation**: [PesaKit GitHub](https://github.com/leonkalema/pesakit)
-- **Issues**: Report bugs or request features
-- **Discussions**: Community support and questions
+- **PesaKit Documentation**: [GitHub](https://github.com/leonkalema/pesakit)
+- **PesaPal API Docs**: [Developer Portal](https://developer.pesapal.com)
+- **Issues**: Report bugs or request features on GitHub
 
 ---
 
-**Built with ❤️ using Svelte 5, TypeScript, and Tailwind CSS**
+**Built with SvelteKit, TypeScript, and Tailwind CSS**
