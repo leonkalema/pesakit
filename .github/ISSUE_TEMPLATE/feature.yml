@@ -1,0 +1,11 @@
+name: Feature request
+description: Something Pesapal supports that pesakit should
+labels: [enhancement]
+body:
+  - type: textarea
+    id: what
+    attributes: { label: What should pesakit do? }
+    validations: { required: true }
+  - type: input
+    id: docs
+    attributes: { label: Link to the Pesapal docs for it }

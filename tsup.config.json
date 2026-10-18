@@ -1,0 +1,28 @@
+{
+  "entry": {
+    "index": "src/index.ts",
+    "testing": "src/testing/index.ts",
+    "checkout": "src/browser/checkout.ts",
+    "express": "src/adapters/express.ts",
+    "fastify": "src/adapters/fastify.ts",
+    "hono": "src/adapters/hono.ts",
+    "fetch": "src/adapters/fetch.ts",
+    "next": "src/adapters/next.ts",
+    "sveltekit": "src/adapters/sveltekit.ts"
+  },
+  "format": [
+    "esm",
+    "cjs"
+  ],
+  "dts": true,
+  "sourcemap": true,
+  "clean": false,
+  "target": "es2022",
+  "platform": "neutral",
+  "splitting": true,
+  "treeshake": true,
+  "outDir": "dist",
+  "external": [
+    "node:http"
+  ]
+}

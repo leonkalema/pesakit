@@ -1,11 +1,12 @@
 /**
- * Express example: create a payment, verify it, receive IPNs.
- *
+ * Express example.
  *   PESAPAL_CONSUMER_KEY=... PESAPAL_CONSUMER_SECRET=... \
- *   PESAPAL_IPN_URL=https://your-public-host/pesapal/ipn node examples/express-server.js
+ *   PESAPAL_IPN_URL=https://your-public-host/pesapal/ipn PUBLIC_URL=https://your-public-host \
+ *   node examples/express-server.js
  */
 import express from 'express';
-import Pesakit from '../index.js';
+import Pesakit from 'pesakit';
+import { ipnHandler } from 'pesakit/express';
 
 const app = express();
 app.use(express.json());
@@ -14,57 +15,44 @@ const pesakit = new Pesakit({
   consumerKey: process.env.PESAPAL_CONSUMER_KEY,
   consumerSecret: process.env.PESAPAL_CONSUMER_SECRET,
   environment: process.env.PESAPAL_ENVIRONMENT || 'sandbox',
-  ipnUrl: process.env.PESAPAL_IPN_URL
+  ipnUrl: process.env.PESAPAL_IPN_URL,
 });
 
-// 1. Create a payment and send the customer to Pesapal.
+// 1. Create a payment and send the customer to redirectUrl.
 app.post('/pay', async (req, res) => {
   try {
-    const { amount, email, phoneNumber, description } = req.body;
     const order = await pesakit.createPayment({
-      amount,
-      email,
-      phoneNumber,
-      description,
-      reference: `ORDER-${Date.now()}`,
+      amount: req.body.amount,
       currency: 'KES',
-      callbackUrl: `${process.env.PUBLIC_URL}/pesapal/callback`
+      description: req.body.description,
+      reference: `ORDER-${Date.now()}`,
+      email: req.body.email,
+      phoneNumber: req.body.phoneNumber,
+      callbackUrl: `${process.env.PUBLIC_URL}/pesapal/callback`,
     });
-    res.json(order); // { orderTrackingId, merchantReference, redirectUrl }
+    res.json(order);
   } catch (error) {
-    res.status(error.statusCode || 500).json({ error: error.message, details: error.details });
+    res.status(error.statusCode || 500).json({ error: error.message, code: error.code, pesapal: error.details?.pesapal });
   }
 });
 
-// 2. Pesapal redirects the customer here after checkout. Never trust it alone.
+// 2. Customer lands here after checkout. Verify, never trust the redirect alone.
 app.get('/pesapal/callback', async (req, res) => {
-  const verification = await pesakit.verifyPayment(req.query.OrderTrackingId);
-  res.send(`Payment ${verification.status} (${verification.merchantReference})`);
+  const v = await pesakit.verifyPayment(req.query.OrderTrackingId);
+  res.send(`Payment ${v.status} for ${v.merchantReference}`);
 });
 
-// 3. Pesapal calls this server-to-server. Register it as PESAPAL_IPN_URL.
-app.all('/pesapal/ipn', pesakit.createIpnHandler({
+// 3. Pesapal calls this server-to-server. Mount with app.all for GET and POST IPNs.
+app.all('/pesapal/ipn', ipnHandler(pesakit, {
   onNotification: async (verification, ipn) => {
-    // Update your order. Throw to make Pesapal retry later.
+    // Runs once per (order, status). Throw to make Pesapal retry.
     console.log('IPN', ipn.orderMerchantReference, verification.status, verification.confirmationCode);
-  }
+  },
 }));
 
-// 4. Refund or cancel from your admin tools.
-app.post('/pesapal/refund', async (req, res) => {
-  const result = await pesakit.refundPayment({
-    confirmationCode: req.body.confirmationCode,
-    amount: req.body.amount,
-    username: req.body.username,
-    remarks: req.body.remarks
-  });
-  res.json(result);
-});
+// 4. Admin actions.
+app.post('/pesapal/refund', async (req, res) => res.json(await pesakit.refundPayment(req.body)));
+app.post('/pesapal/cancel/:id', async (req, res) => res.json(await pesakit.cancelOrder(req.params.id)));
 
-app.post('/pesapal/cancel/:orderTrackingId', async (req, res) => {
-  res.json(await pesakit.cancelOrder(req.params.orderTrackingId));
-});
-
-app.get('/health', async (_req, res) => res.json(await pesakit.getHealthStatus()));
-
+app.get('/health', (_req, res) => res.json(pesakit.status()));
 app.listen(process.env.PORT || 3000, () => console.log('Listening'));

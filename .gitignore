@@ -26,3 +26,8 @@ coverage/
 *.sw?
 dist/
 _to_delete/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+docs/.vitepress/.temp/
+*.timestamp-*.mjs
+tsup.config.bundled_*.mjs

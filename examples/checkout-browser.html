@@ -1,0 +1,24 @@
+<!doctype html>
+<!-- Browser side: your server returns { redirectUrl, orderTrackingId } from createPayment()
+     with redirectMode: 'PARENT_WINDOW'. No secrets in this file. -->
+<html>
+  <body>
+    <div id="checkout"></div>
+    <p id="status">Waiting for payment</p>
+    <script type="module">
+      import { mountCheckout, pollStatus } from 'https://esm.sh/pesakit@4/checkout';
+
+      const order = await fetch('/pay', { method: 'POST', body: JSON.stringify({ amount: 1500, email: 'jane@example.com', description: 'Order' }), headers: { 'Content-Type': 'application/json' } }).then((r) => r.json());
+
+      const checkout = mountCheckout({
+        container: '#checkout',
+        redirectUrl: order.redirectUrl,
+        onCallback: async () => {
+          checkout.destroy();
+          const status = await pollStatus(() => fetch(`/status/${order.orderTrackingId}`).then((r) => r.json()).then((j) => j.status));
+          document.querySelector('#status').textContent = `Payment ${status}`;
+        },
+      });
+    </script>
+  </body>
+</html>

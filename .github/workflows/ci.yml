@@ -1,8 +1,8 @@
-name: Node.js CI
+name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
 
 jobs:
@@ -19,6 +19,19 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
-      - run: npm run test:unit
+      - run: npm run typecheck
+      - run: npm test
       - run: npm run build
-      - run: node -e "require('./dist/index.cjs')"
+      - run: node -e "const P=require('./dist/index.cjs'); if (typeof P !== 'function') process.exit(1)"
+      - run: node --input-type=module -e "import P from './dist/index.js'; if (typeof P !== 'function') process.exit(1)"
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run docs:build

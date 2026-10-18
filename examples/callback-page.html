@@ -1,0 +1,11 @@
+<!doctype html>
+<!-- The page at callbackUrl. Pesapal loads it inside the iframe after checkout. -->
+<html>
+  <body>
+    <p>Payment received. You can close this window.</p>
+    <script type="module">
+      import { postCallbackMessage } from 'https://esm.sh/pesakit@4/checkout';
+      postCallbackMessage();
+    </script>
+  </body>
+</html>

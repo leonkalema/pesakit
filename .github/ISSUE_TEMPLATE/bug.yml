@@ -1,0 +1,30 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes: { label: pesakit version }
+    validations: { required: true }
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      options: [Node, Bun, Deno, Cloudflare Workers, Vercel Edge, Other]
+    validations: { required: true }
+  - type: dropdown
+    id: env
+    attributes:
+      label: Pesapal environment
+      options: [sandbox, production]
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: A snippet using `pesakit/testing` is ideal. Never paste consumer keys.
+    validations: { required: true }
+  - type: textarea
+    id: error
+    attributes:
+      label: Error output
+      description: Include `error.code`, `error.pesapalCode` and `error.details.pesapal` if present.

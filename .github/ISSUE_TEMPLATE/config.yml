@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Pesapal account or settlement questions
+    url: https://www.pesapal.com/contact
+    about: pesakit is a client library. Account, settlement and KYC questions go to Pesapal.

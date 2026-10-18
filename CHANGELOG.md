@@ -1,31 +1,23 @@
 # Changelog
 
+Managed by changesets from 4.0.0 onward. Entries below are historical.
+
+## 4.0.0
+
+TypeScript rewrite. Zero runtime dependencies, native fetch, runs on Node 18+, Bun, Deno, Cloudflare Workers and Vercel Edge.
+
+- IPN dedupe store (`store` option, memory default, pluggable).
+- Framework adapters: `pesakit/express`, `pesakit/fastify`, `pesakit/hono`, `pesakit/next`, `pesakit/sveltekit`, `pesakit/fetch`.
+- `pesakit/testing`: mock Pesapal with the same endpoints and error codes, usable as a fetch or an HTTP server.
+- `pesakit/checkout`: browser helpers for iframe checkout, callback messaging and status polling.
+- Docs site, changesets, provenance publishing.
+- Breaking changes listed in the migrating guide.
+
 ## 3.0.0
 
-### Added
-- `getIpnList()`, `ensureIpnUrl()`, `refundPayment()`, `cancelOrder()`.
-- Subscription orders via `subscription: { accountNumber, startDate, endDate, frequency }`.
-- `cancellationUrl`, `redirectMode`, `branch`, `middleName` and full billing address on orders.
-- `ipnUrl` and `ipnNotificationType` client config. The URL is registered once and reused.
-- `Pesakit.parseIpn(req)` for frameworks without Express style `req`/`res`.
-- Named exports for the client, `STATUS_CODES` and all error classes.
-- CommonJS build at `dist/index.cjs`. `require('pesakit')` works.
-- CI on Node 18, 20 and 22.
-
-### Changed
-- IPN handler now follows Pesapal's contract: parse `OrderTrackingId`, call `GetTransactionStatus`, reply with the JSON acknowledgement. Options are `onNotification` and `onError`.
-- `createPayment()` returns `{ orderTrackingId, merchantReference, redirectUrl, raw }`.
-- `verifyPayment()` maps `status_code` and exposes `confirmationCode`, `paymentAccount`, `createdDate` and `raw`.
-- `registerIpnUrl()` returns the full record.
-- Pesapal error bodies on HTTP 200 are raised as typed errors with `details.pesapal`.
-- Retries now apply (they were configured on an unused axios instance).
-- Token cache TTL follows Pesapal's 5 minute expiry.
-- Validation accepts any ISO 4217 currency and either email or phone.
-
-### Removed
-- Hard-coded `country_code: 'KE'`.
-- HMAC signature check on IPNs (Pesapal sends none).
-- Unused dependencies: pino, pino-pretty, crypto-js.
+- Full V3 surface: `getIpnList`, `refundPayment`, `cancelOrder`, subscriptions.
+- IPN handler rewritten to Pesapal's real contract (no signature, verify via status, JSON ack).
+- CommonJS build, tests running, dependency cleanup.
 
 ## 2.0.5
 
