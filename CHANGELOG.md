@@ -1,5 +1,11 @@
 # Changelog
 
+## 5.0.0
+
+### Major Changes
+
+- 3e3eda5: 4.0.0: TypeScript rewrite with zero runtime dependencies, native fetch, edge runtime support, IPN dedupe store, framework adapters (express, fastify, hono, next, sveltekit, fetch), a mock Pesapal for tests (`pesakit/testing`), browser checkout helpers (`pesakit/checkout`), and a docs site. See the migrating guide.
+
 Managed by changesets from 4.0.0 onward. Entries below are historical.
 
 ## 4.0.0
