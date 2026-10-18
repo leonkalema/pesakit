@@ -1,243 +1,203 @@
-declare module 'pesakit' {
-  // Configuration interfaces
-  interface PesakitConfig {
-    consumerKey: string;
-    consumerSecret: string;
-    environment?: 'sandbox' | 'production';
-    timeout?: number;
-    retries?: number;
-    enableLogging?: boolean;
-    logLevel?: 'trace' | 'debug' | 'info' | 'warn' | 'error';
-  }
+export type Environment = 'sandbox' | 'production' | 'test';
+export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';
+export type IpnNotificationType = 'GET' | 'POST';
+export type PaymentStatus = 'INVALID' | 'COMPLETED' | 'FAILED' | 'REVERSED' | string;
+export type SubscriptionFrequency = 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'YEARLY';
 
-  // Payment data interface with comprehensive validation
-  interface PaymentData {
-    amount: number;
-    description: string;
-    reference: string;
-    email: string;
-    callbackUrl: string;
-    currency?: 'KES' | 'UGX' | 'TZS' | 'RWF' | 'MWK' | 'ZMW' | 'ZWL' | 'USD';
-    firstName?: string;
-    lastName?: string;
-    phoneNumber?: string;
-    billingAddress?: BillingAddress;
-  }
-
-  interface BillingAddress {
-    line1?: string;
-    line2?: string;
-    city?: string;
-    state?: string;
-    postalCode?: string;
-    countryCode?: string;
-  }
-
-  // Enhanced payment verification response
-  interface PaymentVerification {
-    status: 'PENDING' | 'COMPLETED' | 'FAILED' | 'INVALID' | 'REVERSED';
-    method: string;
-    amount: number;
-    currency: string;
-    merchantReference?: string;
-    timestamp: string;
-  }
-
-  // IPN data interface
-  interface IpnData {
-    orderTrackingId: string;
-    status: 'PENDING' | 'COMPLETED' | 'FAILED' | 'INVALID' | 'REVERSED';
-    merchantReference?: string;
-    amount?: number;
-    currency?: string;
-    paymentMethod?: string;
-    paymentAccount?: string;
-    timestamp?: string;
-  }
-
-  // IPN handler options
-  interface IpnHandlerOptions {
-    onSuccess?: (ipnData: IpnData, verification: PaymentVerification) => Promise<void>;
-    onFailure?: (ipnData: IpnData, verification: PaymentVerification | null, error: string) => Promise<void>;
-    validateSignature?: boolean;
-  }
-
-  // Health check interfaces
-  interface HealthStatus {
-    status: 'healthy' | 'degraded' | 'unhealthy' | 'critical';
-    timestamp: string;
-    checks: Record<string, HealthCheck>;
-    summary: HealthSummary;
-  }
-
-  interface HealthCheck {
-    status: 'healthy' | 'unhealthy';
-    result?: any;
-    error?: string;
-    critical: boolean;
-    duration: number;
-  }
-
-  interface HealthSummary {
-    total: number;
-    healthy: number;
-    unhealthy: number;
-    critical: number;
-  }
-
-  // Metrics interfaces
-  interface MetricsSnapshot {
-    timestamp: number;
-    uptime: number;
-    counters: Record<string, MetricValue[]>;
-    gauges: Record<string, MetricValue[]>;
-    histograms: Record<string, HistogramValue[]>;
-  }
-
-  interface MetricValue {
-    value: number;
-    tags: Record<string, string>;
-    timestamp?: number;
-  }
-
-  interface HistogramValue {
-    count: number;
-    sum: number;
-    min: number;
-    max: number;
-    mean: number;
-    percentiles: Record<string, number>;
-    tags: Record<string, string>;
-  }
-
-  // Rate limit status interface
-  interface RateLimitStatus {
-    strategy: 'token-bucket' | 'sliding-window' | 'fixed-window';
-    availableTokens?: number;
-    capacity?: number;
-    timeUntilRefill?: number;
-    requestCount?: number;
-    limit?: number;
-    remainingRequests?: number;
-    resetTime?: number;
-  }
-
-  // Error interfaces
-  interface PesakitErrorDetails {
-    code: string;
-    statusCode: number;
-    details: Record<string, any>;
-    timestamp: string;
-    correlationId?: string;
-  }
-
-  // Custom error classes
-  class PesakitError extends Error {
-    code: string;
-    statusCode: number;
-    details: Record<string, any>;
-    timestamp: string;
-    
-    constructor(message: string, code: string, statusCode?: number, details?: Record<string, any>);
-    toJSON(): PesakitErrorDetails;
-  }
-
-  class AuthenticationError extends PesakitError {
-    constructor(message?: string, details?: Record<string, any>);
-  }
-
-  class ValidationError extends PesakitError {
-    constructor(message?: string, details?: Record<string, any>);
-  }
-
-  class PaymentError extends PesakitError {
-    constructor(message?: string, details?: Record<string, any>);
-  }
-
-  class NetworkError extends PesakitError {
-    constructor(message?: string, details?: Record<string, any>);
-  }
-
-  class RateLimitError extends PesakitError {
-    constructor(message?: string, details?: Record<string, any>);
-  }
-
-  class SignatureError extends PesakitError {
-    constructor(message?: string, details?: Record<string, any>);
-  }
-
-  class ConfigurationError extends PesakitError {
-    constructor(message?: string, details?: Record<string, any>);
-  }
-
-  // Express.js request/response types for IPN handler
-  interface Request {
-    body: any;
-    headers: Record<string, string>;
-    ip?: string;
-  }
-
-  interface Response {
-    status(code: number): Response;
-    json(data: any): Response;
-    send(data: any): Response;
-  }
-
-  type NextFunction = (error?: any) => void;
-  type IpnHandler = (req: Request, res: Response, next?: NextFunction) => Promise<void>;
-
-  // Main Pesakit class with comprehensive typing
-  class Pesakit {
-    readonly config: Required<PesakitConfig>;
-    readonly correlationId: string;
-
-    constructor(config: PesakitConfig);
-
-    // Core payment methods
-    getOAuthToken(): Promise<string>;
-    createPayment(paymentData: PaymentData): Promise<string>;
-    verifyPayment(orderTrackingId: string): Promise<PaymentVerification>;
-    createIpnHandler(options?: IpnHandlerOptions): IpnHandler;
-
-    // Monitoring and health methods
-    getHealthStatus(): Promise<HealthStatus>;
-    getMetrics(): MetricsSnapshot;
-    getRateLimitStatus(key: string): RateLimitStatus | null;
-
-    // Utility methods
-    invalidateToken(): void;
-    destroy(): void;
-  }
-
-  // Export error classes
-  export {
-    PesakitError,
-    AuthenticationError,
-    ValidationError,
-    PaymentError,
-    NetworkError,
-    RateLimitError,
-    SignatureError,
-    ConfigurationError
-  };
-
-  // Export interfaces
-  export {
-    PesakitConfig,
-    PaymentData,
-    BillingAddress,
-    PaymentVerification,
-    IpnData,
-    IpnHandlerOptions,
-    HealthStatus,
-    HealthCheck,
-    HealthSummary,
-    MetricsSnapshot,
-    MetricValue,
-    HistogramValue,
-    RateLimitStatus,
-    PesakitErrorDetails
-  };
-
-  export = Pesakit;
+export interface PesakitConfig {
+  consumerKey: string;
+  consumerSecret: string;
+  environment?: Environment;
+  timeout?: number;
+  retries?: number;
+  enableLogging?: boolean;
+  logLevel?: LogLevel;
+  /** Default IPN URL, registered on first use when a payment has no notificationId. */
+  ipnUrl?: string;
+  ipnNotificationType?: IpnNotificationType;
 }
+
+export interface BillingAddress {
+  line1?: string;
+  line2?: string;
+  city?: string;
+  state?: string;
+  postalCode?: string;
+  zipCode?: string;
+  /** ISO 3166-1 alpha-2, e.g. KE, UG, TZ. */
+  countryCode?: string;
+}
+
+export interface SubscriptionDetails {
+  accountNumber: string;
+  /** DD-MM-YYYY */
+  startDate: string;
+  /** DD-MM-YYYY */
+  endDate: string;
+  frequency: SubscriptionFrequency;
+}
+
+export interface PaymentData {
+  amount: number;
+  description: string;
+  /** Your unique order id. Max 50 chars. */
+  reference: string;
+  email?: string;
+  phoneNumber?: string;
+  callbackUrl: string;
+  cancellationUrl?: string;
+  redirectMode?: 'TOP_WINDOW' | 'PARENT_WINDOW';
+  branch?: string;
+  /** ISO 4217, default KES. */
+  currency?: string;
+  /** ipn_id from registerIpnUrl(). If omitted, ipnUrl (here or in config) is registered. */
+  notificationId?: string;
+  ipnUrl?: string;
+  firstName?: string;
+  middleName?: string;
+  lastName?: string;
+  billingAddress?: BillingAddress;
+  subscription?: SubscriptionDetails;
+}
+
+export interface PaymentResult {
+  orderTrackingId: string;
+  merchantReference: string;
+  redirectUrl: string;
+  raw: Record<string, unknown>;
+}
+
+export interface PaymentVerification {
+  status: PaymentStatus;
+  /** 0 INVALID, 1 COMPLETED, 2 FAILED, 3 REVERSED */
+  statusCode: number | null;
+  isCompleted: boolean;
+  orderTrackingId?: string;
+  merchantReference?: string;
+  method?: string;
+  amount?: number;
+  currency?: string;
+  paymentAccount?: string;
+  confirmationCode?: string;
+  description?: string;
+  message?: string;
+  createdDate?: string;
+  callbackUrl?: string;
+  subscriptionTransactionInfo?: Record<string, unknown>;
+  timestamp: string;
+  raw: Record<string, unknown>;
+}
+
+export interface IpnRecord {
+  ipnId: string;
+  url: string;
+  notificationType?: string;
+  status?: string;
+  createdDate?: string;
+  raw: Record<string, unknown>;
+}
+
+export interface IpnNotification {
+  orderTrackingId: string;
+  orderMerchantReference?: string;
+  orderNotificationType: string;
+}
+
+export interface RefundRequest {
+  /** confirmationCode from verifyPayment(). */
+  confirmationCode: string;
+  amount: number;
+  /** Name or id of the person issuing the refund. */
+  username: string;
+  remarks: string;
+}
+
+export interface ActionResult {
+  status: string;
+  message?: string;
+  raw: Record<string, unknown>;
+}
+
+export interface IpnRequestLike {
+  query?: Record<string, unknown>;
+  body?: Record<string, unknown>;
+  headers?: Record<string, unknown>;
+}
+
+export interface IpnResponseLike {
+  status(code: number): IpnResponseLike;
+  json(data: unknown): unknown;
+}
+
+export type IpnNextFunction = (error?: unknown) => void;
+export type IpnHandler = (req: IpnRequestLike, res: IpnResponseLike, next?: IpnNextFunction) => Promise<void>;
+
+export interface IpnHandlerOptions {
+  /** Called after GetTransactionStatus succeeds. Throw to make Pesapal retry. */
+  onNotification?: (verification: PaymentVerification, ipn: IpnNotification) => void | Promise<void>;
+  onError?: (error: Error, ipn: IpnNotification | null, req: IpnRequestLike) => void | Promise<void>;
+}
+
+export interface HealthStatus {
+  status: 'healthy' | 'degraded' | 'unhealthy' | 'critical';
+  timestamp: string;
+  checks: Record<string, unknown>;
+  summary: { total: number; healthy: number; unhealthy: number; critical: number };
+}
+
+export interface PesakitErrorDetails {
+  name: string;
+  message: string;
+  code: string;
+  statusCode: number;
+  details: Record<string, unknown>;
+  timestamp: string;
+}
+
+export class PesakitError extends Error {
+  code: string;
+  statusCode: number;
+  details: Record<string, unknown>;
+  timestamp: string;
+  constructor(message: string, code: string, statusCode?: number, details?: Record<string, unknown>);
+  toJSON(): PesakitErrorDetails;
+}
+export class AuthenticationError extends PesakitError { constructor(message?: string, details?: Record<string, unknown>); }
+export class ValidationError extends PesakitError { constructor(message?: string, details?: Record<string, unknown>); }
+export class PaymentError extends PesakitError { constructor(message?: string, details?: Record<string, unknown>); }
+export class NetworkError extends PesakitError { constructor(message?: string, details?: Record<string, unknown>); }
+export class RateLimitError extends PesakitError { constructor(message?: string, details?: Record<string, unknown>); }
+export class SignatureError extends PesakitError { constructor(message?: string, details?: Record<string, unknown>); }
+export class ConfigurationError extends PesakitError { constructor(message?: string, details?: Record<string, unknown>); }
+
+export const STATUS_CODES: Readonly<Record<number, PaymentStatus>>;
+
+export class Pesakit {
+  readonly config: Required<Omit<PesakitConfig, 'ipnUrl'>> & { ipnUrl?: string };
+  readonly correlationId: string;
+  readonly baseURL: string;
+
+  constructor(config: PesakitConfig);
+
+  getOAuthToken(): Promise<string>;
+  invalidateToken(): void;
+
+  registerIpnUrl(ipnUrl: string, notificationType?: IpnNotificationType): Promise<IpnRecord>;
+  getIpnList(): Promise<IpnRecord[]>;
+  ensureIpnUrl(ipnUrl: string, notificationType?: IpnNotificationType): Promise<IpnRecord>;
+
+  createPayment(paymentData: PaymentData): Promise<PaymentResult>;
+  verifyPayment(orderTrackingId: string): Promise<PaymentVerification>;
+  refundPayment(request: RefundRequest): Promise<ActionResult>;
+  cancelOrder(orderTrackingId: string): Promise<ActionResult>;
+
+  static parseIpn(req: IpnRequestLike): IpnNotification;
+  createIpnHandler(options?: IpnHandlerOptions): IpnHandler;
+
+  getHealthStatus(): Promise<HealthStatus>;
+  getMetrics(): Record<string, unknown>;
+  getRateLimitStatus(key: string): Record<string, unknown> | null;
+  destroy(): void;
+}
+
+export default Pesakit;

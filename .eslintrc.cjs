@@ -10,7 +10,7 @@ module.exports = {
     'eslint:recommended'
   ],
   parserOptions: {
-    ecmaVersion: 2021,
+    ecmaVersion: 2022,
     sourceType: 'module'
   },
   rules: {
@@ -18,7 +18,7 @@ module.exports = {
     'linebreak-style': ['error', 'unix'],
     'quotes': ['error', 'single'],
     'semi': ['error', 'always'],
-    'no-unused-vars': ['error', { 'argsIgnorePattern': '^_' }],
+    'no-unused-vars': ['error', { 'argsIgnorePattern': '^_', 'varsIgnorePattern': '^_' }],
     'no-console': 'off',
     'no-undef': 'error'
   },
@@ -26,6 +26,7 @@ module.exports = {
     'node_modules/',
     'coverage/',
     'dist/',
+    '_to_delete/',
     '*.min.js'
   ]
 };

@@ -1,16 +1,6 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import Pesakit from 'pesakit';
-
-const pesakit = new Pesakit({
-  consumerKey: 'K6KoQabQeQkK5ZrPM67cbujFwhgrB6r1',
-  consumerSecret: 'qgQnnnPF5fSqrJNEIDJOEoAuHTI=',
-  environment: 'sandbox',
-  timeout: 30000,
-  retries: 3,
-  enableLogging: false,
-  logLevel: 'error'
-});
+import { pesakit } from '$lib/server/pesakit';
 
 export const GET: RequestHandler = async () => {
   try {

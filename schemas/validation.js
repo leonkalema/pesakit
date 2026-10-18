@@ -1,201 +1,111 @@
 import Joi from 'joi';
 import { ValidationError } from '../lib/errors.js';
 
-/**
- * Comprehensive validation schemas for all Pesakit operations
- */
+const url = Joi.string().uri({ scheme: ['http', 'https'] }).max(2048);
 
 const configSchema = Joi.object({
   consumerKey: Joi.string().required().min(10).max(200),
   consumerSecret: Joi.string().required().min(10).max(200),
-  environment: Joi.string().valid('sandbox', 'production').default('sandbox'),
-  timeout: Joi.number().integer().min(1000).max(60000).default(30000),
+  environment: Joi.string().valid('sandbox', 'production', 'test').default('sandbox'),
+  timeout: Joi.number().integer().min(1000).max(120000).default(30000),
   retries: Joi.number().integer().min(0).max(10).default(3),
   enableLogging: Joi.boolean().default(true),
-  logLevel: Joi.string().valid('trace', 'debug', 'info', 'warn', 'error').default('info')
+  logLevel: Joi.string().valid('trace', 'debug', 'info', 'warn', 'error').default('info'),
+  ipnUrl: url.optional(),
+  ipnNotificationType: Joi.string().valid('GET', 'POST').default('GET')
+});
+
+const subscriptionSchema = Joi.object({
+  accountNumber: Joi.string().required().max(100),
+  startDate: Joi.string().required().pattern(/^\d{2}-\d{2}-\d{4}$/)
+    .messages({ 'string.pattern.base': 'startDate must be DD-MM-YYYY' }),
+  endDate: Joi.string().required().pattern(/^\d{2}-\d{2}-\d{4}$/)
+    .messages({ 'string.pattern.base': 'endDate must be DD-MM-YYYY' }),
+  frequency: Joi.string().required().valid('DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY')
 });
 
 const paymentDataSchema = Joi.object({
-  amount: Joi.number().positive().precision(2).required()
-    .min(1)
-    .max(1000000)
-    .messages({
-      'number.positive': 'Amount must be a positive number',
-      'number.min': 'Amount must be at least 1',
-      'number.max': 'Amount cannot exceed 1,000,000'
-    }),
-  
-  description: Joi.string().required().min(1).max(500)
-    .pattern(/^[a-zA-Z0-9\s\-_.,!@#$%^&*()]+$/)
-    .messages({
-      'string.pattern.base': 'Description contains invalid characters'
-    }),
-  
-  reference: Joi.string().required().min(1).max(100)
-    .pattern(/^[a-zA-Z0-9\-_]+$/)
-    .messages({
-      'string.pattern.base': 'Reference must contain only alphanumeric characters, hyphens, and underscores'
-    }),
-  
-  email: Joi.string().email().required()
-    .max(254)
-    .messages({
-      'string.email': 'Please provide a valid email address'
-    }),
-  
-  callbackUrl: Joi.string().uri({ scheme: ['http', 'https'] }).required()
-    .max(2048)
-    .messages({
-      'string.uri': 'Callback URL must be a valid HTTP/HTTPS URL'
-    }),
-  
-  currency: Joi.string().valid('KES', 'UGX', 'TZS', 'RWF', 'MWK', 'ZMW', 'ZWL', 'USD').default('KES'),
-
-  // PesaPal API: one of these is required by downstream logic. We allow both here; business logic decides which to use
-  notificationId: Joi.string()
-    .guid({ version: ['uuidv4', 'uuidv5'] })
-    .optional(),
-  ipnUrl: Joi.string()
-    .uri({ scheme: ['http', 'https'] })
-    .optional(),
-  
-  firstName: Joi.string().min(1).max(50).optional()
-    .pattern(/^[a-zA-Z\s\-']+$/),
-  
-  lastName: Joi.string().min(1).max(50).optional()
-    .pattern(/^[a-zA-Z\s\-']+$/),
-  
-  phoneNumber: Joi.string().optional()
-    .pattern(/^\+?[1-9]\d{1,14}$/)
-    .messages({
-      'string.pattern.base': 'Phone number must be in international format'
-    }),
-  
+  amount: Joi.number().positive().precision(2).required(),
+  description: Joi.string().required().min(1).max(100),
+  reference: Joi.string().required().min(1).max(50).pattern(/^[a-zA-Z0-9\-_.:]+$/)
+    .messages({ 'string.pattern.base': 'Reference may contain letters, digits, hyphens, underscores, dots and colons' }),
+  email: Joi.string().email().max(254).optional(),
+  phoneNumber: Joi.string().pattern(/^\+?[0-9]{7,15}$/).optional()
+    .messages({ 'string.pattern.base': 'Phone number must be digits with an optional leading +' }),
+  callbackUrl: url.required(),
+  cancellationUrl: url.optional(),
+  redirectMode: Joi.string().valid('TOP_WINDOW', 'PARENT_WINDOW').optional(),
+  branch: Joi.string().max(100).optional(),
+  currency: Joi.string().length(3).uppercase().default('KES'),
+  notificationId: Joi.string().guid().optional(),
+  ipnUrl: url.optional(),
+  firstName: Joi.string().max(50).optional(),
+  middleName: Joi.string().max(50).optional(),
+  lastName: Joi.string().max(50).optional(),
   billingAddress: Joi.object({
     line1: Joi.string().max(100),
     line2: Joi.string().max(100),
     city: Joi.string().max(50),
     state: Joi.string().max(50),
     postalCode: Joi.string().max(20),
+    zipCode: Joi.string().max(20),
     countryCode: Joi.string().length(2).uppercase()
-  }).optional()
-});
+  }).optional(),
+  subscription: subscriptionSchema.optional()
+}).or('email', 'phoneNumber')
+  .messages({ 'object.missing': 'Provide at least one of email or phoneNumber' });
 
-const orderTrackingIdSchema = Joi.string().required()
-  .min(1)
-  .max(100)
+const orderTrackingIdSchema = Joi.string().required().min(1).max(100)
   .pattern(/^[a-zA-Z0-9\-_]+$/)
-  .messages({
-    'string.pattern.base': 'Order tracking ID contains invalid characters'
-  });
+  .messages({ 'string.pattern.base': 'Order tracking ID contains invalid characters' });
 
 const ipnDataSchema = Joi.object({
   orderTrackingId: orderTrackingIdSchema,
-  status: Joi.string().required()
-    .valid('PENDING', 'COMPLETED', 'FAILED', 'INVALID', 'REVERSED'),
-  merchantReference: Joi.string().max(100),
-  amount: Joi.number().positive().precision(2),
-  currency: Joi.string().length(3).uppercase(),
-  paymentMethod: Joi.string().max(50),
-  paymentAccount: Joi.string().max(100),
-  timestamp: Joi.date().iso()
+  orderMerchantReference: Joi.string().max(100).optional(),
+  orderNotificationType: Joi.string().max(50).default('IPNCHANGE')
 });
 
-const signatureValidationSchema = Joi.object({
-  signature: Joi.string().required().min(1),
-  payload: Joi.string().required(),
-  secret: Joi.string().required().min(1)
+const ipnRegistrationSchema = Joi.object({
+  url: url.required(),
+  notificationType: Joi.string().valid('GET', 'POST').default('GET')
 });
 
-/**
- * Validation helper functions
- */
-const validateConfig = (config) => {
-  const { error, value } = configSchema.validate(config, { 
-    abortEarly: false,
-    stripUnknown: true 
-  });
-  
+const refundSchema = Joi.object({
+  confirmationCode: Joi.string().required().max(100),
+  amount: Joi.number().positive().precision(2).required(),
+  username: Joi.string().required().max(100),
+  remarks: Joi.string().required().max(500)
+});
+
+const run = (schema, data, label) => {
+  const { error, value } = schema.validate(data, { abortEarly: false, stripUnknown: true });
   if (error) {
-    const details = error.details.map(detail => ({
-      field: detail.path.join('.'),
-      message: detail.message,
-      value: detail.context?.value
-    }));
-    throw new ValidationError(`Configuration validation failed: ${JSON.stringify(details)}`);
+    const details = error.details.map((d) => ({ field: d.path.join('.'), message: d.message }));
+    throw new ValidationError(`${label} validation failed: ${JSON.stringify(details)}`, { fields: details });
   }
-  
   return value;
 };
 
-const validatePaymentData = (data) => {
-  const { error, value } = paymentDataSchema.validate(data, { 
-    abortEarly: false,
-    stripUnknown: true 
-  });
-  
-  if (error) {
-    const details = error.details.map(detail => ({
-      field: detail.path.join('.'),
-      message: detail.message,
-      value: detail.context?.value
-    }));
-    throw new ValidationError(`Payment data validation failed: ${JSON.stringify(details)}`);
-  }
-  
-  return value;
+const validators = {
+  validateConfig: (data) => run(configSchema, data, 'Configuration'),
+  validatePaymentData: (data) => run(paymentDataSchema, data, 'Payment data'),
+  validateOrderTrackingId: (id) => run(orderTrackingIdSchema, id, 'Order tracking ID'),
+  validateIpnData: (data) => run(ipnDataSchema, data, 'IPN data'),
+  validateIpnRegistration: (data) => {
+    const value = run(ipnRegistrationSchema, data, 'IPN registration');
+    return { url: value.url, type: value.notificationType };
+  },
+  validateRefund: (data) => run(refundSchema, data, 'Refund')
 };
 
-const validateOrderTrackingId = (id) => {
-  const { error, value } = orderTrackingIdSchema.validate(id);
-  
-  if (error) {
-    throw new ValidationError(`Order tracking ID validation failed: ${error.message}`);
-  }
-  
-  return value;
-};
-
-const validateIpnData = (data) => {
-  const { error, value } = ipnDataSchema.validate(data, { 
-    abortEarly: false,
-    stripUnknown: true 
-  });
-  
-  if (error) {
-    const details = error.details.map(detail => ({
-      field: detail.path.join('.'),
-      message: detail.message,
-      value: detail.context?.value
-    }));
-    throw new ValidationError(`IPN data validation failed: ${JSON.stringify(details)}`);
-  }
-  
-  return value;
-};
-
-const validateSignature = (data) => {
-  const { error, value } = signatureValidationSchema.validate(data);
-  
-  if (error) {
-    throw new ValidationError(`Signature validation failed: ${error.message}`);
-  }
-  
-  return value;
-};
-
-export const schemas = {
+const schemas = {
   configSchema,
   paymentDataSchema,
+  subscriptionSchema,
   orderTrackingIdSchema,
   ipnDataSchema,
-  signatureValidationSchema
+  ipnRegistrationSchema,
+  refundSchema
 };
 
-export const validators = {
-  validateConfig,
-  validatePaymentData,
-  validateOrderTrackingId,
-  validateIpnData,
-  validateSignature
-};
+export { schemas, validators };

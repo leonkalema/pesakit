@@ -1,786 +1,257 @@
-# Pesakit - Production-Ready Pesapal Integration
+# pesakit
 
-[![npm version](https://badge.fury.io/js/pesakit.svg)](https://badge.fury.io/js/pesakit)
+Pesapal API 3.0 client for Node.js. Full V3 coverage: one-off payments, subscriptions, status checks, refunds, cancellation, IPN registration and an IPN handler that follows Pesapal's real contract.
+
+[![npm version](https://img.shields.io/npm/v/pesakit.svg)](https://www.npmjs.com/package/pesakit)
+[![Node.js CI](https://github.com/leonkalema/pesakit/actions/workflows/ci.yml/badge.svg)](https://github.com/leonkalema/pesakit/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Node.js CI](https://github.com/leonkalema/pesakit/workflows/Node.js%20CI/badge.svg)](https://github.com/leonkalema/pesakit/actions)
 
-A enterprise-grade Node.js client for Pesapal's V3 API with comprehensive security, monitoring, and resilience features. Built for production environments with extensive error handling, caching, rate limiting, and observability.
+Works with Kenya, Uganda, Tanzania, Rwanda, Malawi, Zambia and Zimbabwe merchant accounts. Card, M-PESA, Airtel Money, MTN MoMo and every other method Pesapal offers your account.
 
-## 🚀 Features
-
-### Core Functionality
-- ✅ **Pesapal API V3 Integration** - Full support for authentication, payments, and verification
-- ✅ **Multi-Environment Support** - Seamless sandbox/production switching
-- ✅ **TypeScript Support** - Comprehensive type definitions with strict typing
-- ✅ **Framework Agnostic** - Works with Express, Fastify, Koa, Next.js, and more
-
-### Enterprise Security
-- 🔒 **Secure Token Caching** - Encrypted token storage with TTL management
-- 🔒 **Timing-Safe Signature Validation** - Protection against timing attacks
-- 🔒 **Input Validation** - Comprehensive schema validation with Joi
-- 🔒 **Sensitive Data Sanitization** - Automatic redaction in logs
-- 🔒 **Correlation ID Tracking** - Request tracing across services
-
-### Production Resilience
-- 🛡️ **Circuit Breaker Pattern** - Automatic failure detection and recovery
-- 🛡️ **Rate Limiting** - Token bucket, sliding window, and fixed window strategies
-- 🛡️ **Exponential Backoff Retry** - Intelligent retry with jitter
-- 🛡️ **Health Checks** - Comprehensive system health monitoring
-- 🛡️ **Graceful Degradation** - Fallback mechanisms for API failures
-
-### Observability & Monitoring
-- 📊 **Structured Logging** - JSON logs with correlation IDs using Pino
-- 📊 **Metrics Collection** - Counters, gauges, histograms with percentiles
-- 📊 **Performance Tracking** - Request timing and throughput monitoring
-- 📊 **Error Tracking** - Detailed error classification and reporting
-
-## 📋 Prerequisites
-
-- **Node.js 18+** (LTS recommended)
-- **Pesapal Merchant Account** with API access
-- **Consumer Credentials** (Key & Secret from Pesapal dashboard)
-- **Registered IPN URL** for webhook notifications
-
-## 🛠️ Installation
+## Install
 
 ```bash
 npm install pesakit
 ```
 
-## ⚡ Quick Start
+Node 18 or newer. Ships ESM and CommonJS, with TypeScript types.
 
-```javascript
-const Pesakit = require('pesakit');
-
-// Initialize with comprehensive configuration
-const client = new Pesakit({
-  consumerKey: process.env.PESAPAL_CONSUMER_KEY,
-  consumerSecret: process.env.PESAPAL_CONSUMER_SECRET,
-  environment: process.env.NODE_ENV === 'production' ? 'production' : 'sandbox',
-  timeout: 30000,
-  retries: 3,
-  enableLogging: true,
-  logLevel: 'info'
-});
-
-// Create a payment
-const paymentUrl = await client.createPayment({
-  amount: 1000.00,
-  description: 'Premium subscription',
-  reference: `ORDER-${Date.now()}`,
-  email: 'customer@example.com',
-  callbackUrl: 'https://yourapp.com/webhook/pesapal',
-  currency: 'KES'
-});
-
-console.log('Payment URL:', paymentUrl);
+```js
+import Pesakit from 'pesakit';        // ESM
+const Pesakit = require('pesakit');   // CommonJS
 ```
 
-## 📖 Complete API Documentation
+## Quick start
 
-### Configuration Options
-
-```javascript
-const client = new Pesakit({
-  consumerKey: 'your_consumer_key',        // Required: Pesapal consumer key
-  consumerSecret: 'your_consumer_secret',  // Required: Pesapal consumer secret
-  environment: 'sandbox',                  // Optional: 'sandbox' | 'production'
-  timeout: 30000,                         // Optional: Request timeout in ms
-  retries: 3,                             // Optional: Number of retry attempts
-  enableLogging: true,                    // Optional: Enable structured logging
-  logLevel: 'info'                        // Optional: Log level
-});
-```
-
-### Payment Creation
-
-```javascript
-// Comprehensive payment data
-const paymentData = {
-  amount: 1500.75,                        // Required: Payment amount
-  description: 'Order #12345',           // Required: Payment description
-  reference: 'ORDER-12345',              // Required: Unique reference
-  email: 'customer@example.com',         // Required: Customer email
-  callbackUrl: 'https://app.com/ipn',    // Required: IPN callback URL
-  currency: 'KES',                       // Optional: Currency code
-  firstName: 'John',                     // Optional: Customer first name
-  lastName: 'Doe',                       // Optional: Customer last name
-  phoneNumber: '+254712345678',          // Optional: Phone number
-  billingAddress: {                      // Optional: Billing address
-    line1: '123 Main St',
-    city: 'Nairobi',
-    countryCode: 'KE'
-  }
-};
-
-try {
-  const paymentUrl = await client.createPayment(paymentData);
-  console.log('Redirect customer to:', paymentUrl);
-} catch (error) {
-  console.error('Payment creation failed:', error.message);
-  // Handle specific error types
-  if (error.code === 'VALIDATION_ERROR') {
-    console.log('Validation details:', error.details);
-  }
-}
-```
-
-### Payment Verification
-
-```javascript
-try {
-  const verification = await client.verifyPayment('ORDER-12345');
-  
-  console.log('Payment Status:', verification.status);     // COMPLETED, PENDING, FAILED
-  console.log('Payment Method:', verification.method);     // M-PESA, Card, etc.
-  console.log('Amount:', verification.amount);
-  console.log('Currency:', verification.currency);
-  console.log('Timestamp:', verification.timestamp);
-} catch (error) {
-  if (error.code === 'PAYMENT_ERROR' && error.statusCode === 404) {
-    console.log('Payment not found');
-  }
-}
-```
-
-### IPN (Webhook) Handler
-
-```javascript
-// Express.js example with comprehensive error handling
-const express = require('express');
-const app = express();
-
-app.use(express.json());
-
-// Create IPN handler with callbacks
-const ipnHandler = client.createIpnHandler({
-  onSuccess: async (ipnData, verification) => {
-    console.log(`Payment ${ipnData.orderTrackingId} completed`);
-    
-    // Update your database
-    await updateOrderStatus(ipnData.orderTrackingId, 'completed');
-    
-    // Send confirmation email
-    await sendConfirmationEmail(verification);
-  },
-  
-  onFailure: async (ipnData, verification, error) => {
-    console.error(`Payment ${ipnData.orderTrackingId} failed:`, error);
-    
-    // Handle failed payments
-    await updateOrderStatus(ipnData.orderTrackingId, 'failed');
-  },
-  
-  validateSignature: true  // Enable signature validation (recommended)
-});
-
-app.post('/webhook/pesapal', ipnHandler);
-
-app.listen(3000);
-```
-
-### Health Monitoring
-
-```javascript
-// Check system health
-const health = await client.getHealthStatus();
-console.log('System Status:', health.status);  // healthy, degraded, unhealthy, critical
-console.log('Health Checks:', health.checks);
-
-// Get performance metrics
-const metrics = client.getMetrics();
-console.log('Uptime:', metrics.uptime);
-console.log('API Calls:', metrics.counters);
-console.log('Response Times:', metrics.histograms);
-
-// Check rate limit status
-const rateLimitStatus = client.getRateLimitStatus('payment:key');
-console.log('Available Tokens:', rateLimitStatus?.availableTokens);
-```
-## 🏗️ Framework Integration Examples
-
-### Express.js Production Setup
-
-```javascript
-const express = require('express');
-const Pesakit = require('pesakit');
-
-const app = express();
-app.use(express.json());
-
-// Initialize Pesakit with production configuration
-const pesakit = new Pesakit({
-  consumerKey: process.env.PESAPAL_CONSUMER_KEY,
-  consumerSecret: process.env.PESAPAL_CONSUMER_SECRET,
-  environment: process.env.NODE_ENV === 'production' ? 'production' : 'sandbox',
-  timeout: 30000,
-  retries: 3,
-  logLevel: process.env.LOG_LEVEL || 'info'
-});
-
-// Payment creation endpoint
-app.post('/api/payments', async (req, res) => {
-  try {
-    const paymentUrl = await pesakit.createPayment(req.body);
-    res.json({ success: true, paymentUrl });
-  } catch (error) {
-    res.status(error.statusCode || 500).json({
-      success: false,
-      error: error.message,
-      code: error.code,
-      correlationId: error.details?.correlationId
-    });
-  }
-});
-
-// Health check endpoint
-app.get('/health', async (req, res) => {
-  const health = await pesakit.getHealthStatus();
-  const statusCode = health.status === 'healthy' ? 200 : 503;
-  res.status(statusCode).json(health);
-});
-
-// Metrics endpoint
-app.get('/metrics', (req, res) => {
-  const metrics = pesakit.getMetrics();
-  res.json(metrics);
-});
-
-// IPN webhook endpoint
-app.post('/webhook/pesapal', pesakit.createIpnHandler({
-  onSuccess: async (ipnData, verification) => {
-    // Update order status in database
-    await updateOrderStatus(ipnData.orderTrackingId, 'completed');
-  }
-}));
-
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  pesakit.destroy();
-  process.exit(0);
-});
-
-app.listen(process.env.PORT || 3000);
-```
-```
-
-### Next.js API Routes
-
-```javascript
-// pages/api/payments/create.js
+```js
 import Pesakit from 'pesakit';
 
 const pesakit = new Pesakit({
   consumerKey: process.env.PESAPAL_CONSUMER_KEY,
   consumerSecret: process.env.PESAPAL_CONSUMER_SECRET,
-  environment: process.env.NODE_ENV === 'production' ? 'production' : 'sandbox'
+  environment: 'sandbox',                       // or 'production'
+  ipnUrl: 'https://yourapp.com/pesapal/ipn'     // registered once, reused after
 });
 
-export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
+// 1. Create a payment and send the customer to redirectUrl
+const order = await pesakit.createPayment({
+  amount: 1500,
+  currency: 'KES',
+  description: 'Order 1042',
+  reference: 'ORDER-1042',                      // your unique id, max 50 chars
+  email: 'jane@example.com',
+  phoneNumber: '254712345678',
+  callbackUrl: 'https://yourapp.com/pesapal/callback'
+});
+// order = { orderTrackingId, merchantReference, redirectUrl }
 
-  try {
-    const paymentUrl = await pesakit.createPayment(req.body);
-    res.json({ success: true, paymentUrl });
-  } catch (error) {
-    res.status(error.statusCode || 500).json({
-      success: false,
-      error: error.message,
-      correlationId: error.details?.correlationId
-    });
+// 2. Confirm the result from your IPN or callback handler
+const status = await pesakit.verifyPayment(order.orderTrackingId);
+// status.status: 'COMPLETED' | 'FAILED' | 'REVERSED' | 'INVALID'
+```
+
+## Credentials
+
+Sandbox keys per country are listed in Pesapal's developer docs under API 3.0. Production keys come from your Pesapal merchant dashboard.
+
+## API
+
+### `new Pesakit(config)`
+
+| Option | Default | Notes |
+| --- | --- | --- |
+| `consumerKey` | required | |
+| `consumerSecret` | required | |
+| `environment` | `'sandbox'` | `'sandbox'` or `'production'` |
+| `ipnUrl` | | Default IPN URL. Looked up in your IPN list, registered if missing, on the first payment without `notificationId`. |
+| `ipnNotificationType` | `'GET'` | `'GET'` or `'POST'`. How Pesapal calls your IPN URL. |
+| `timeout` | `30000` | Per request, ms |
+| `retries` | `3` | Retries on network errors and 5xx, exponential backoff |
+| `enableLogging` | `true` | JSON logs to the console |
+| `logLevel` | `'info'` | `trace` `debug` `info` `warn` `error` |
+
+### `createPayment(data)` → `{ orderTrackingId, merchantReference, redirectUrl, raw }`
+
+Calls `SubmitOrderRequest`.
+
+| Field | Required | Notes |
+| --- | --- | --- |
+| `amount` | yes | |
+| `currency` | | ISO 4217. Default `KES`. |
+| `description` | yes | Max 100 chars |
+| `reference` | yes | Your order id. Unique per merchant. Max 50 chars, letters, digits, `- _ . :` |
+| `callbackUrl` | yes | Where Pesapal sends the customer after checkout |
+| `email` or `phoneNumber` | one of | |
+| `notificationId` | | `ipnId` from `registerIpnUrl()`. Falls back to `ipnUrl` here, then in config. |
+| `ipnUrl` | | Per-payment override of the config value |
+| `cancellationUrl` | | Shown as a cancel link on the checkout page |
+| `redirectMode` | | `'TOP_WINDOW'` or `'PARENT_WINDOW'` for iframe checkouts |
+| `branch` | | Store or branch label in your dashboard |
+| `firstName` `middleName` `lastName` | | |
+| `billingAddress` | | `{ line1, line2, city, state, postalCode, zipCode, countryCode }` |
+| `subscription` | | See recurring payments below |
+
+Show `redirectUrl` to the customer: redirect to it, or load it in an iframe with `redirectMode: 'PARENT_WINDOW'`.
+
+### Recurring payments
+
+```js
+await pesakit.createPayment({
+  amount: 999,
+  currency: 'KES',
+  description: 'Monthly plan',
+  reference: 'SUB-77',
+  email: 'jane@example.com',
+  callbackUrl: 'https://yourapp.com/pesapal/callback',
+  subscription: {
+    accountNumber: 'CUSTOMER-77',
+    startDate: '01-11-2026',   // DD-MM-YYYY
+    endDate: '01-11-2027',
+    frequency: 'MONTHLY'       // DAILY | WEEKLY | MONTHLY | YEARLY
   }
+});
+```
+
+Only Visa and Mastercard support recurring billing. The customer confirms the subscription on the checkout page. Each later charge arrives as an IPN with `orderNotificationType: 'RECURRING'`; call `verifyPayment()` and read `subscriptionTransactionInfo`.
+
+### `verifyPayment(orderTrackingId)` → verification
+
+Calls `GetTransactionStatus`. Call it from your IPN handler and your callback route. The redirect alone proves nothing.
+
+```js
+{
+  status: 'COMPLETED',        // COMPLETED | FAILED | REVERSED | INVALID
+  statusCode: 1,              // 0 INVALID, 1 COMPLETED, 2 FAILED, 3 REVERSED
+  isCompleted: true,
+  orderTrackingId: '...',
+  merchantReference: 'ORDER-1042',
+  method: 'MpesaKE',
+  amount: 1500,
+  currency: 'KES',
+  paymentAccount: '2547XXXX',
+  confirmationCode: 'QCD4...',  // needed for refunds
+  createdDate: '2026-10-18T09:12:44.123',
+  message: 'Request processed successfully',
+  raw: { /* full Pesapal response */ }
 }
 ```
 
-### Fastify Plugin
+A pending payment comes back as `INVALID` with `statusCode: 0`. That is how Pesapal reports "not paid yet".
 
-```javascript
-const fastify = require('fastify')({ logger: true });
-const Pesakit = require('pesakit');
+### IPN
 
-// Register Pesakit as a plugin
-fastify.register(async function (fastify) {
-  const pesakit = new Pesakit({
-    consumerKey: process.env.PESAPAL_CONSUMER_KEY,
-    consumerSecret: process.env.PESAPAL_CONSUMER_SECRET,
-    environment: process.env.NODE_ENV === 'production' ? 'production' : 'sandbox'
-  });
-  
-  fastify.decorate('pesakit', pesakit);
-  
-  // Add hooks for cleanup
-  fastify.addHook('onClose', async () => {
-    pesakit.destroy();
-  });
-});
+Pesapal calls your IPN URL whenever a transaction changes state, with `OrderTrackingId`, `OrderMerchantReference` and `OrderNotificationType` as query parameters (GET) or a JSON body (POST). There is no signature. Verification means calling `GetTransactionStatus`, which the handler does for you.
 
-// Payment routes
-fastify.post('/payments', async (request, reply) => {
-  try {
-    const paymentUrl = await fastify.pesakit.createPayment(request.body);
-    return { success: true, paymentUrl };
-  } catch (error) {
-    reply.code(error.statusCode || 500);
-    return { success: false, error: error.message };
-  }
-});
-
-fastify.listen({ port: 3000 });
+```js
+// Express, Fastify (with express compat), Koa via koa-connect, Next.js pages API
+app.all('/pesapal/ipn', pesakit.createIpnHandler({
+  onNotification: async (verification, ipn) => {
+    await orders.update(ipn.orderMerchantReference, { status: verification.status });
+    // throw to answer 500 so Pesapal retries later
+  },
+  onError: async (error, ipn, req) => { /* optional logging */ }
+}));
 ```
 
-## 🔧 Error Handling & Debugging
+The handler replies with the JSON acknowledgement Pesapal expects:
 
-### Error Types
+```json
+{ "orderNotificationType": "IPNCHANGE", "orderTrackingId": "...", "orderMerchantReference": "...", "status": 200 }
+```
 
-```javascript
-const {
-  AuthenticationError,
-  ValidationError,
-  PaymentError,
-  NetworkError,
-  RateLimitError,
-  SignatureError,
-  ConfigurationError
-} = require('pesakit');
+For frameworks without `req`/`res` (SvelteKit, Next.js app router, Hono, Remix) use the static parser and build the reply yourself:
+
+```js
+const ipn = Pesakit.parseIpn({ query: Object.fromEntries(url.searchParams), body });
+const verification = await pesakit.verifyPayment(ipn.orderTrackingId);
+return Response.json({ ...ipn, status: 200 });
+```
+
+Pesapal needs a public URL. Use a tunnel such as ngrok while developing. The sandbox sends IPNs too.
+
+### `registerIpnUrl(url, type = 'GET')` → `{ ipnId, url, notificationType, status, createdDate, raw }`
+
+Calls `RegisterIPN`. Pass `ipnId` as `notificationId` in `createPayment()`.
+
+### `getIpnList()` → `IpnRecord[]`
+
+Calls `GetIpnList`.
+
+### `ensureIpnUrl(url, type = 'GET')` → `IpnRecord`
+
+Returns the active registration for `url`, or registers it. `createPayment()` uses this when you give it an `ipnUrl`.
+
+### `refundPayment({ confirmationCode, amount, username, remarks })` → `{ status, message, raw }`
+
+Calls `RefundRequest`. `confirmationCode` is on the verification result. Rules from Pesapal: only `COMPLETED` payments, one refund per payment, cards can be partial, mobile money must be the full amount. A `200` means "received"; the merchant approves it in the dashboard before money moves. A rejection throws `PaymentError`.
+
+### `cancelOrder(orderTrackingId)` → `{ status, message, raw }`
+
+Calls `CancelOrder`. Only pending or failed orders can be cancelled, once. A rejection throws `PaymentError`.
+
+### `getOAuthToken()`, `invalidateToken()`
+
+Tokens are fetched with `RequestToken` and cached in memory for their lifetime (5 minutes). You rarely need these.
+
+### Ops
+
+`getHealthStatus()`, `getMetrics()`, `getRateLimitStatus(key)`, `destroy()`.
+
+## Errors
+
+Every error extends `PesakitError` and has `code`, `statusCode`, `details` and `timestamp`. Pesapal's own error object, when present, is in `details.pesapal`.
+
+| Class | code | When |
+| --- | --- | --- |
+| `ValidationError` | `VALIDATION_ERROR` | Bad input. Nothing was sent. `details.fields` lists the problems. |
+| `AuthenticationError` | `AUTHENTICATION_ERROR` | Wrong credentials, or Pesapal returned 401/403 |
+| `PaymentError` | `PAYMENT_ERROR` | Pesapal rejected the request, or the order was not found |
+| `NetworkError` | `NETWORK_ERROR` | Timeout, connection failure, or the circuit breaker is open |
+
+```js
+import Pesakit, { ValidationError, PaymentError } from 'pesakit';
 
 try {
-  await client.createPayment(paymentData);
+  await pesakit.createPayment(data);
 } catch (error) {
-  switch (error.constructor) {
-    case ValidationError:
-      console.log('Invalid input:', error.details);
-      break;
-    case AuthenticationError:
-      console.log('Invalid credentials');
-      break;
-    case PaymentError:
-      console.log('Payment failed:', error.message);
-      break;
-    case RateLimitError:
-      console.log('Rate limit exceeded, retry after:', error.details.retryAfter);
-      break;
-    case NetworkError:
-      console.log('Network issue:', error.message);
-      break;
-    default:
-      console.log('Unexpected error:', error.message);
-  }
-  
-  // All errors include correlation ID for tracking
-  console.log('Correlation ID:', error.details?.correlationId);
+  if (error instanceof ValidationError) console.log(error.details.fields);
+  if (error instanceof PaymentError) console.log(error.details.pesapal?.code);
 }
 ```
 
-### Debugging & Logging
+Common Pesapal error codes: `invalid_consumer_key_or_secret_provided`, `duplicate_reference` (reuse of `reference`), `invalid_notification_id`.
 
-```javascript
-// Enable debug logging
-const client = new Pesakit({
-  consumerKey: process.env.PESAPAL_CONSUMER_KEY,
-  consumerSecret: process.env.PESAPAL_CONSUMER_SECRET,
-  logLevel: 'debug'  // trace, debug, info, warn, error
-});
+## Built in
 
-// Monitor metrics for debugging
-setInterval(() => {
-  const metrics = client.getMetrics();
-  console.log('API Success Rate:', {
-    auth: metrics.counters['auth.success']?.[0]?.value || 0,
-    payments: metrics.counters['payment.create.success']?.[0]?.value || 0,
-    errors: metrics.counters['payment.create.error']?.[0]?.value || 0
-  });
-}, 60000);
-```
+- Token cache: one `RequestToken` call per 5 minutes per process.
+- Retries with exponential backoff on network errors and 5xx.
+- Circuit breaker per endpoint (opossum) so a Pesapal outage fails fast.
+- Token-bucket rate limiter, 100 requests per minute per credential.
+- Structured JSON logs with a correlation id per client. Set `enableLogging: false` to silence.
+- Metrics counters and timers via `getMetrics()`.
 
-## 🚀 Production Deployment
+## Examples
 
-### Environment Variables
+- [`examples/express-server.js`](examples/express-server.js): pay, callback, IPN, refund, cancel.
+- [`examples/svelte`](examples/svelte): SvelteKit app with iframe checkout, callback `postMessage`, status polling and an IPN route.
+- [`examples/react-example.jsx`](examples/react-example.jsx): browser side only. Never put your consumer secret in the browser.
+
+## Testing
 
 ```bash
-# Required
-PESAPAL_CONSUMER_KEY=your_production_consumer_key
-PESAPAL_CONSUMER_SECRET=your_production_consumer_secret
-NODE_ENV=production
-
-# Optional
-LOG_LEVEL=info
-PESAPAL_TIMEOUT=30000
-PESAPAL_RETRIES=3
-PORT=3000
+npm test                  # unit tests, mocked with nock
+PESAPAL_CONSUMER_KEY=... PESAPAL_CONSUMER_SECRET=... npm run test:integration   # live sandbox
 ```
 
-### Docker Deployment
+## Upgrading from 2.x
 
-```dockerfile
-# Dockerfile
-FROM node:18-alpine
+- `createPayment()` returns `{ orderTrackingId, merchantReference, redirectUrl }`, not a string.
+- `createIpnHandler()` takes `onNotification(verification, ipn)` and `onError`. The old `onSuccess`, `onFailure` and `validateSignature` options are gone: Pesapal does not sign IPNs, so the old handler rejected every real notification.
+- `verifyPayment()` returns `statusCode` and `confirmationCode`, and reports pending orders as `INVALID` the way Pesapal does.
+- `registerIpnUrl()` returns an object; read `.ipnId`.
+- `country_code` is no longer hard-coded to `KE`. Pass `billingAddress.countryCode` if you want it.
+- CommonJS `require('pesakit')` works again via the bundled `dist/index.cjs`.
 
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci --only=production
+## License
 
-COPY . .
-EXPOSE 3000
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:3000/health || exit 1
-
-CMD ["node", "server.js"]
-```
-
-```yaml
-# docker-compose.yml
-version: '3.8'
-services:
-  app:
-    build: .
-    ports:
-      - "3000:3000"
-    environment:
-      - NODE_ENV=production
-      - PESAPAL_CONSUMER_KEY=${PESAPAL_CONSUMER_KEY}
-      - PESAPAL_CONSUMER_SECRET=${PESAPAL_CONSUMER_SECRET}
-      - LOG_LEVEL=info
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-```
-
-### Kubernetes Deployment
-
-```yaml
-# k8s-deployment.yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: pesakit-app
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: pesakit-app
-  template:
-    metadata:
-      labels:
-        app: pesakit-app
-    spec:
-      containers:
-      - name: app
-        image: your-registry/pesakit-app:latest
-        ports:
-        - containerPort: 3000
-        env:
-        - name: NODE_ENV
-          value: "production"
-        - name: PESAPAL_CONSUMER_KEY
-          valueFrom:
-            secretKeyRef:
-              name: pesapal-secrets
-              key: consumer-key
-        - name: PESAPAL_CONSUMER_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: pesapal-secrets
-              key: consumer-secret
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 3000
-          initialDelaySeconds: 30
-          periodSeconds: 10
-        readinessProbe:
-          httpGet:
-            path: /health
-            port: 3000
-          initialDelaySeconds: 5
-          periodSeconds: 5
-        resources:
-          requests:
-            memory: "256Mi"
-            cpu: "250m"
-          limits:
-            memory: "512Mi"
-            cpu: "500m"
-```
-
-### Monitoring & Alerting
-
-```javascript
-// monitoring.js - Prometheus metrics example
-const client = require('prom-client');
-const express = require('express');
-const Pesakit = require('pesakit');
-
-// Create custom metrics
-const paymentCounter = new client.Counter({
-  name: 'pesakit_payments_total',
-  help: 'Total number of payment requests',
-  labelNames: ['status', 'currency']
-});
-
-const paymentDuration = new client.Histogram({
-  name: 'pesakit_payment_duration_seconds',
-  help: 'Payment request duration',
-  buckets: [0.1, 0.5, 1, 2, 5]
-});
-
-// Integrate with Pesakit metrics
-const pesakit = new Pesakit(config);
-
-pesakit.metrics.on('metric', (metric) => {
-  if (metric.name.includes('payment.create')) {
-    paymentCounter.inc({
-      status: metric.name.includes('success') ? 'success' : 'error',
-      currency: metric.tags?.currency || 'unknown'
-    });
-  }
-});
-
-// Expose metrics endpoint
-app.get('/metrics', (req, res) => {
-  res.set('Content-Type', client.register.contentType);
-  res.end(client.register.metrics());
-});
-```
-## 🧪 Testing
-
-### Running Tests
-
-```bash
-# Install dependencies
-npm install
-
-# Run unit tests
-npm test
-
-# Run tests with coverage
-npm run test:coverage
-
-# Run integration tests (requires test credentials)
-npm run test:integration
-
-# Run tests in watch mode
-npm run test:watch
-
-# Lint code
-npm run lint
-
-# Security audit
-npm run security:audit
-```
-
-### Test Environment Setup
-
-```bash
-# .env.test
-PESAPAL_CONSUMER_KEY=test_consumer_key
-PESAPAL_CONSUMER_SECRET=test_consumer_secret
-PESAPAL_ENV=sandbox
-LOG_LEVEL=error
-```
-
-### Writing Tests
-
-```javascript
-const Pesakit = require('pesakit');
-const nock = require('nock');
-
-describe('Payment Tests', () => {
-  let client;
-  
-  beforeEach(() => {
-    client = new Pesakit({
-      consumerKey: 'test_key',
-      consumerSecret: 'test_secret',
-      environment: 'sandbox'
-    });
-    
-    // Mock Pesapal API
-    nock('https://cybqa.pesapal.com')
-      .post('/pesapalv3/api/auth/request-token')
-      .reply(200, { token: 'test_token', expires_in: 3600 });
-  });
-  
-  afterEach(() => {
-    client.destroy();
-    nock.cleanAll();
-  });
-  
-  test('should create payment successfully', async () => {
-    nock('https://cybqa.pesapal.com')
-      .post('/pesapalv3/api/payments/submit-order')
-      .reply(200, { redirect_url: 'https://payment.url' });
-    
-    const paymentUrl = await client.createPayment({
-      amount: 1000,
-      description: 'Test payment',
-      reference: 'TEST-123',
-      email: 'test@example.com',
-      callbackUrl: 'https://test.com/callback'
-    });
-    
-    expect(paymentUrl).toBe('https://payment.url');
-  });
-});
-```
-
-## 📊 Performance & Scaling
-
-### Performance Optimization
-
-```javascript
-// Use connection pooling for high-throughput applications
-const https = require('https');
-const agent = new https.Agent({
-  keepAlive: true,
-  maxSockets: 50,
-  maxFreeSockets: 10,
-  timeout: 60000
-});
-
-// Configure axios to use the agent
-axios.defaults.httpsAgent = agent;
-
-// Optimize token caching for multiple instances
-const client = new Pesakit({
-  consumerKey: process.env.PESAPAL_CONSUMER_KEY,
-  consumerSecret: process.env.PESAPAL_CONSUMER_SECRET,
-  environment: 'production',
-  // Reduce token refresh frequency
-  timeout: 15000,
-  retries: 2
-});
-```
-
-### Load Balancing
-
-```javascript
-// Use cluster module for CPU-intensive operations
-const cluster = require('cluster');
-const numCPUs = require('os').cpus().length;
-
-if (cluster.isMaster) {
-  for (let i = 0; i < numCPUs; i++) {
-    cluster.fork();
-  }
-  
-  cluster.on('exit', (worker) => {
-    console.log(`Worker ${worker.process.pid} died`);
-    cluster.fork();
-  });
-} else {
-  // Worker process
-  const app = require('./app');
-  app.listen(process.env.PORT || 3000);
-}
-```
-
-## 🔒 Security Best Practices
-
-### 1. Credential Management
-- Never hardcode credentials in source code
-- Use environment variables or secure vaults
-- Rotate credentials regularly
-- Use different credentials for different environments
-
-### 2. Network Security
-- Always use HTTPS in production
-- Implement proper CORS policies
-- Use rate limiting to prevent abuse
-- Validate all incoming webhook requests
-
-### 3. Data Protection
-- Enable signature validation for webhooks
-- Sanitize logs to prevent credential leakage
-- Use correlation IDs for request tracking
-- Implement proper error handling
-
-## 📈 Monitoring & Observability
-
-### Key Metrics to Monitor
-
-1. **Payment Success Rate**: `payment.create.success / (payment.create.success + payment.create.error)`
-2. **API Response Time**: P50, P95, P99 percentiles
-3. **Token Cache Hit Rate**: `auth.cache_hit / (auth.cache_hit + auth.cache_miss)`
-4. **Circuit Breaker Status**: Open/closed state
-5. **Rate Limit Violations**: `rate_limit_error` count
-
-### Alerting Rules
-
-```yaml
-# Prometheus alerting rules
-groups:
-- name: pesakit
-  rules:
-  - alert: PesakitHighErrorRate
-    expr: rate(pesakit_payments_total{status="error"}[5m]) > 0.1
-    for: 2m
-    labels:
-      severity: warning
-    annotations:
-      summary: High payment error rate detected
-      
-  - alert: PesakitCircuitBreakerOpen
-    expr: pesakit_circuit_breaker_state == 1
-    for: 1m
-    labels:
-      severity: critical
-    annotations:
-      summary: Circuit breaker is open
-```
-
-## 🤝 Contributing
-
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
-
-### Development Setup
-
-```bash
-# Clone the repository
-git clone https://github.com/leonkalema/pesakit.git
-cd pesakit
-
-# Install dependencies
-npm install
-
-# Run tests
-npm test
-
-# Start development with watch mode
-npm run dev
-```
-
-### Submitting Changes
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests for new functionality
-5. Ensure all tests pass
-6. Submit a pull request
-
-## 📄 License
-
-MIT License - see [LICENSE](LICENSE) file for details.
-
-## 🆘 Support
-
-- **Documentation**: [Full API Documentation](https://github.com/leonkalema/pesakit/wiki)
-- **Issues**: [GitHub Issues](https://github.com/leonkalema/pesakit/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/leonkalema/pesakit/discussions)
-
-## 🏆 Acknowledgments
-
-- Pesapal for providing the payment gateway API
-- The Node.js community for excellent tooling
-- Contributors and users who help improve this library
-
----
-
-**Built with ❤️ for the African fintech ecosystem**
+MIT

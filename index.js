@@ -1,8 +1,7 @@
 import axios from 'axios';
-import axiosRetry from 'axios-retry';
+import * as axiosRetryModule from 'axios-retry';
 import crypto from 'crypto';
 
-// Import production-ready modules
 import Logger from './lib/logger.js';
 import { TokenCache } from './lib/cache.js';
 import SecurityUtils from './lib/security.js';
@@ -11,48 +10,62 @@ import { RateLimiter } from './lib/rate-limiter.js';
 import { MetricsCollector, HealthChecker } from './lib/monitoring.js';
 import { validators } from './schemas/validation.js';
 import {
+  PesakitError,
   AuthenticationError,
   ValidationError,
   PaymentError,
   NetworkError,
-  SignatureError
+  RateLimitError,
+  SignatureError,
+  ConfigurationError
 } from './lib/errors.js';
 
+// axios-retry ships different default-export shapes for ESM and CommonJS.
+const axiosRetry = typeof axiosRetryModule.default === 'function'
+  ? axiosRetryModule.default
+  : axiosRetryModule.default.default;
+const { isNetworkError, isRetryableError } = axiosRetry;
+
+const USER_AGENT = 'Pesakit/3.0.0';
+const TOKEN_TTL_SECONDS = 290; // Pesapal tokens live 5 minutes; refresh a little early
+
 /**
- * Production-ready Pesapal API client with enterprise features
+ * Pesapal API 3.0 status codes returned by GetTransactionStatus.
+ */
+const STATUS_CODES = Object.freeze({
+  0: 'INVALID',
+  1: 'COMPLETED',
+  2: 'FAILED',
+  3: 'REVERSED'
+});
+
+/**
+ * Pesapal API 3.0 client.
+ *
+ * Covers the full V3 surface: RequestToken, RegisterIPN, GetIpnList,
+ * SubmitOrderRequest (one-off and subscription), GetTransactionStatus,
+ * RefundRequest and CancelOrder, plus an IPN handler that follows the
+ * contract Pesapal actually uses.
  */
 class Pesakit {
   constructor(config) {
-    // Validate and sanitize configuration
     this.config = validators.validateConfig(config);
-    
-    // Initialize logger with correlation ID
+
     this.logger = new Logger({
       level: this.config.logLevel,
-      service: 'pesakit'
+      service: 'pesakit',
+      enabled: this.config.enableLogging
     });
-    
-    // Create correlation ID for this instance
     this.correlationId = this.logger.createCorrelationId();
-    this.logger.info('Initializing Pesakit client', {
-      environment: this.config.environment,
-      correlationId: this.correlationId
-    });
 
-    // Set base URL based on environment
-    this.baseURL = this.config.environment === 'production' 
+    this.baseURL = this.config.environment === 'production'
       ? 'https://pay.pesapal.com/v3'
       : 'https://cybqa.pesapal.com/pesapalv3';
 
-    // Initialize secure token cache
-    const encryptionKeyString = process.env.PESAKIT_ENCRYPTION_KEY || 'pesakit-default-key';
+    const encryptionKeyString = process.env.PESAKIT_ENCRYPTION_KEY || this.config.consumerSecret;
     const encryptionKey = crypto.createHash('sha256').update(encryptionKeyString).digest();
-    this.tokenCache = new TokenCache({
-      stdTTL: 3300, // 55 minutes
-      encryptionKey
-    });
+    this.tokenCache = new TokenCache({ stdTTL: TOKEN_TTL_SECONDS, encryptionKey });
 
-    // Initialize circuit breaker for resilience
     this.circuitBreaker = new PesakitCircuitBreaker({
       timeout: this.config.timeout,
       errorThresholdPercentage: 50,
@@ -63,77 +76,58 @@ class Pesakit {
 
     this.rateLimiter = new RateLimiter({
       strategy: 'token-bucket',
-      requests: 100, // 100 requests per minute
+      requests: 100,
       window: 60000,
       burst: 10
     });
 
-    // Initialize metrics collector
-    this.metrics = new MetricsCollector({
-      flushInterval: 60000 // 1 minute
-    });
-
-    // Initialize health checker
+    this.metrics = new MetricsCollector({ flushInterval: 60000 });
     this.healthChecker = new HealthChecker();
     this.registerHealthChecks();
 
-    // Create axios instance
     this.axios = axios.create({
+      baseURL: this.baseURL,
       timeout: this.config.timeout,
       headers: {
+        'Accept': 'application/json',
         'Content-Type': 'application/json',
-        'User-Agent': 'Pesakit-Node/2.0.0'
+        'User-Agent': USER_AGENT
       }
     });
-
-    // Configure axios with retry logic
     this.setupAxiosRetry();
-
-    // Setup metrics event handlers
     this.setupMetricsHandlers();
 
-    this.logger.info('Pesakit client initialized successfully', {
+    this.logger.info('Pesakit client initialized', {
+      environment: this.config.environment,
       correlationId: this.correlationId
     });
   }
 
-  /**
-   * Setup axios retry configuration with exponential backoff
-   */
   setupAxiosRetry() {
     axiosRetry(this.axios, {
       retries: this.config.retries,
       retryDelay: (retryCount) => Math.min(1000 * Math.pow(2, retryCount), 10000),
-      retryCondition: (error) => {
-        return axiosRetry.isNetworkError(error) || 
-               axiosRetry.isRetryableError(error) ||
-               (error.response && error.response.status >= 500);
-      },
+      retryCondition: (error) => isNetworkError(error)
+        || isRetryableError(error)
+        || (error.response && error.response.status >= 500),
       onRetry: (retryCount, error, requestConfig) => {
         this.logger.warn('Retrying request', {
           retryCount,
           url: requestConfig.url,
           method: requestConfig.method,
           error: error.message,
-          correlationId: this.correlationId,
-          attempt: retryCount
+          correlationId: this.correlationId
         });
       }
     });
   }
 
-  /**
-   * Setup metrics event handlers
-   */
   setupMetricsHandlers() {
     this.metrics.on('flush', (metrics) => {
       this.logger.debug('Metrics flushed', { metrics, correlationId: this.correlationId });
     });
   }
 
-  /**
-   * Register health checks
-   */
   registerHealthChecks() {
     this.healthChecker.register('cache', () => this.tokenCache.healthCheck());
     this.healthChecker.register('circuit-breaker', () => this.circuitBreaker.healthCheck());
@@ -141,65 +135,129 @@ class Pesakit {
     this.healthChecker.register('metrics', () => this.metrics.healthCheck());
   }
 
+  /* ------------------------------------------------------------------ */
+  /* HTTP plumbing                                                        */
+  /* ------------------------------------------------------------------ */
+
   /**
-   * Get OAuth token with caching and security
+   * Single place for every HTTP call. Adds auth, correlation id and
+   * circuit breaker protection.
    */
+  async request(name, { method = 'POST', path, data, params, auth = true }) {
+    const headers = { 'X-Correlation-ID': this.correlationId };
+    if (auth) {
+      const token = await this.getOAuthToken();
+      headers.Authorization = `Bearer ${token}`;
+    }
+    const call = () => this.axios.request({ method, url: path, data, params, headers });
+    const response = await this.circuitBreaker.protect(name, call);
+    this.assertPesapalOk(response.data);
+    return response.data;
+  }
+
+  /**
+   * Pesapal returns HTTP 200 with an `error` object for many failures.
+   * Surface those as real errors.
+   */
+  assertPesapalOk(body) {
+    if (!body || typeof body !== 'object') return;
+    const errorObject = body.error && typeof body.error === 'object' && (body.error.code || body.error.message);
+    const rejected = String(body.status) === '500' || body.error === 500;
+    if (errorObject || rejected) {
+      const err = new Error((errorObject && body.error.message) || body.message || 'Pesapal rejected the request');
+      err.pesapal = errorObject ? body.error : { code: String(body.status || body.error), message: body.message };
+      err.response = { status: 200, data: body };
+      throw err;
+    }
+  }
+
+  async checkRateLimit(scope) {
+    const key = `${scope}:${SecurityUtils.hashData(this.config.consumerKey)}`;
+    await this.rateLimiter.isAllowed(key);
+  }
+
+  /**
+   * Convert a transport/Pesapal error into a typed Pesakit error.
+   */
+  toPesakitError(error, fallbackMessage, extra = {}) {
+    if (error instanceof PesakitError) return error;
+    const status = error.response?.status;
+    const details = {
+      originalError: error.message,
+      pesapal: error.pesapal || error.response?.data?.error || undefined,
+      statusCode: status,
+      correlationId: this.correlationId,
+      ...extra
+    };
+    if (status === 401 || status === 403) {
+      return new AuthenticationError('Authentication failed', details);
+    }
+    if (status === 404) {
+      return new PaymentError('Not found', details);
+    }
+    if (!error.response || error.code === 'ECONNABORTED' || error.code === 'EOPENBREAKER') {
+      return new NetworkError(fallbackMessage, details);
+    }
+    return new PaymentError(fallbackMessage, details);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Auth                                                                 */
+  /* ------------------------------------------------------------------ */
+
   async getOAuthToken() {
     const timer = this.metrics.startTimer('auth.get_token');
-    
     try {
-      // Check rate limiting
-      const rateLimitKey = `auth:${SecurityUtils.hashData(this.config.consumerKey)}`;
-      await this.rateLimiter.isAllowed(rateLimitKey);
+      await this.checkRateLimit('auth');
 
-      // Check cache first
-      const cachedToken = this.tokenCache.getToken(this.config.consumerKey);
-      if (cachedToken) {
-        this.logger.debug('Using cached OAuth token', { correlationId: this.correlationId });
+      const cached = this.tokenCache.getToken(this.config.consumerKey);
+      if (cached) {
         this.metrics.increment('auth.cache_hit');
         timer.end();
-        return cachedToken;
+        return cached;
       }
-
       this.metrics.increment('auth.cache_miss');
-      this.logger.info('Requesting new OAuth token', { correlationId: this.correlationId });
 
-      // Make authenticated request through circuit breaker
-      const response = await this.circuitBreaker.protect(
-        'auth',
-        this.makeAuthRequest.bind(this)
-      );
-
-      const token = response.data.token;
-      const expiresIn = 300; // PesaPal API 3.0 tokens expire in 5 minutes
-
-      // Cache the token securely
-      this.tokenCache.setToken(this.config.consumerKey, token, expiresIn);
-
-      this.logger.info('OAuth token obtained successfully', {
-        expiresIn,
-        correlationId: this.correlationId
+      const body = await this.request('auth', {
+        path: '/api/Auth/RequestToken',
+        auth: false,
+        data: {
+          consumer_key: this.config.consumerKey,
+          consumer_secret: this.config.consumerSecret
+        }
       });
 
-      this.metrics.increment('auth.success');
-      timer.end();
-      return token;
-
-    } catch (error) {
-      timer.end();
-      this.metrics.increment('auth.error', 1, { error: error.constructor.name });
-      
-      this.logger.error('Failed to obtain OAuth token', error, {
-        correlationId: this.correlationId
-      });
-
-      if (error.response && error.response.status === 401) {
-        throw new AuthenticationError('Invalid credentials', {
-          statusCode: error.response.status,
+      if (!body || !body.token) {
+        throw new AuthenticationError('Pesapal did not return a token', {
+          pesapal: body?.error,
           correlationId: this.correlationId
         });
       }
 
+      let ttl = TOKEN_TTL_SECONDS;
+      if (body.expiryDate) {
+        const secondsLeft = Math.floor((new Date(body.expiryDate).getTime() - Date.now()) / 1000) - 10;
+        if (secondsLeft > 0) ttl = Math.min(secondsLeft, TOKEN_TTL_SECONDS);
+      }
+      this.tokenCache.setToken(this.config.consumerKey, body.token, ttl);
+
+      this.metrics.increment('auth.success');
+      timer.end();
+      return body.token;
+    } catch (error) {
+      timer.end();
+      this.metrics.increment('auth.error', 1, { error: error.constructor.name });
+      this.logger.error('Failed to obtain OAuth token', error, { correlationId: this.correlationId });
+
+      if (error instanceof PesakitError) throw error;
+      const status = error.response?.status;
+      if (status === 401 || status === 403 || error.pesapal) {
+        throw new AuthenticationError('Invalid credentials', {
+          statusCode: status,
+          pesapal: error.pesapal,
+          correlationId: this.correlationId
+        });
+      }
       throw new NetworkError('Failed to obtain OAuth token', {
         originalError: error.message,
         correlationId: this.correlationId
@@ -207,512 +265,401 @@ class Pesakit {
     }
   }
 
+  invalidateToken() {
+    this.tokenCache.invalidateToken(this.config.consumerKey);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* IPN URL setup                                                        */
+  /* ------------------------------------------------------------------ */
+
   /**
-   * Make authentication request using PesaPal API 3.0
+   * Register an IPN URL. Returns the full Pesapal record; `ipn_id` is
+   * what you pass as `notificationId` when creating payments.
    */
-  async makeAuthRequest() {
-    return axios.post(
-      `${this.baseURL}/api/Auth/RequestToken`,
-      {
-        consumer_key: this.config.consumerKey,
-        consumer_secret: this.config.consumerSecret
-      },
-      {
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-          'User-Agent': 'Pesakit/2.0.0',
-          'X-Correlation-ID': this.correlationId
-        },
-        timeout: this.config.timeout
-      }
-    );
+  async registerIpnUrl(ipnUrl, notificationType = 'GET') {
+    const timer = this.metrics.startTimer('ipn.register');
+    try {
+      const { url, type } = validators.validateIpnRegistration({ url: ipnUrl, notificationType });
+      const body = await this.request('ipn_register', {
+        path: '/api/URLSetup/RegisterIPN',
+        data: { url, ipn_notification_type: type }
+      });
+      timer.end();
+      this.metrics.increment('ipn.register.success');
+      return {
+        ipnId: body.ipn_id,
+        url: body.url,
+        notificationType: body.ipn_notification_type_description || type,
+        status: body.ipn_status_decription || body.ipn_status_description,
+        createdDate: body.created_date,
+        raw: body
+      };
+    } catch (error) {
+      timer.end();
+      this.metrics.increment('ipn.register.error', 1, { error: error.constructor.name });
+      this.logger.error('Failed to register IPN URL', error, { correlationId: this.correlationId });
+      throw this.toPesakitError(error, 'Failed to register IPN URL');
+    }
   }
 
   /**
-   * Create payment with comprehensive validation and monitoring
+   * List IPN URLs registered for this merchant.
+   */
+  async getIpnList() {
+    const timer = this.metrics.startTimer('ipn.list');
+    try {
+      const body = await this.request('ipn_list', {
+        method: 'GET',
+        path: '/api/URLSetup/GetIpnList'
+      });
+      timer.end();
+      const list = Array.isArray(body) ? body : [];
+      return list.map((item) => ({
+        ipnId: item.ipn_id,
+        url: item.url,
+        notificationType: item.ipn_notification_type_description,
+        status: item.ipn_status_decription || item.ipn_status_description,
+        createdDate: item.created_date,
+        raw: item
+      }));
+    } catch (error) {
+      timer.end();
+      this.logger.error('Failed to list IPN URLs', error, { correlationId: this.correlationId });
+      throw this.toPesakitError(error, 'Failed to list IPN URLs');
+    }
+  }
+
+  /**
+   * Find an already registered IPN for a URL, or register it.
+   */
+  async ensureIpnUrl(ipnUrl, notificationType = 'GET') {
+    const existing = await this.getIpnList();
+    const match = existing.find((item) => item.url === ipnUrl && String(item.status).toLowerCase() === 'active');
+    if (match) return match;
+    return this.registerIpnUrl(ipnUrl, notificationType);
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Payments                                                             */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Submit an order. Returns { orderTrackingId, merchantReference, redirectUrl }.
+   * Pass `subscription` for recurring payments.
    */
   async createPayment(paymentData) {
     const timer = this.metrics.startTimer('payment.create');
-    
     try {
-      // Validate payment data
-      const validatedData = validators.validatePaymentData(paymentData);
-      
-      this.logger.info('Creating payment', {
-        reference: validatedData.reference,
-        amount: validatedData.amount,
-        currency: validatedData.currency,
-        correlationId: this.correlationId
-      });
+      const data = validators.validatePaymentData(paymentData);
+      await this.checkRateLimit('payment');
 
-      // Check rate limiting
-      const rateLimitKey = `payment:${SecurityUtils.hashData(this.config.consumerKey)}`;
-      await this.rateLimiter.isAllowed(rateLimitKey);
-
-      // Register IPN URL if not provided
-      if (!validatedData.notificationId) {
-        const ipnUrl = validatedData.ipnUrl || validatedData.callbackUrl.replace('/callback', '/ipn');
-        validatedData.notificationId = await this.registerIpnUrl(ipnUrl, 'GET');
+      if (!data.notificationId) {
+        const ipnUrl = data.ipnUrl || this.config.ipnUrl;
+        if (!ipnUrl) {
+          throw new ValidationError('Provide notificationId, ipnUrl, or set ipnUrl in the client config');
+        }
+        const ipn = await this.ensureIpnUrl(ipnUrl, this.config.ipnNotificationType);
+        data.notificationId = ipn.ipnId;
       }
 
-      // Get OAuth token
-      const token = await this.getOAuthToken();
-
-      // Make payment request through circuit breaker
-      const response = await this.circuitBreaker.protect(
-        'payment',
-        this.makePaymentRequest.bind(this),
-        token,
-        validatedData
-      );
+      const body = await this.request('payment', {
+        path: '/api/Transactions/SubmitOrderRequest',
+        data: Pesakit.toOrderPayload(data)
+      });
 
       const result = {
-        orderTrackingId: response.data.order_tracking_id,
-        merchantReference: response.data.merchant_reference,
-        redirectUrl: response.data.redirect_url
+        orderTrackingId: body.order_tracking_id,
+        merchantReference: body.merchant_reference,
+        redirectUrl: body.redirect_url,
+        raw: body
       };
-      
-      this.logger.info('Payment created successfully', {
-        reference: validatedData.reference,
-        orderTrackingId: result.orderTrackingId,
-        correlationId: this.correlationId
-      });
 
       this.metrics.increment('payment.create.success');
-      this.metrics.histogram('payment.amount', validatedData.amount, {
-        currency: validatedData.currency
-      });
-
+      this.metrics.histogram('payment.amount', data.amount, { currency: data.currency });
       timer.end();
       return result;
-
     } catch (error) {
       timer.end();
-      this.metrics.increment('payment.create.error', 1, { 
-        error: error.constructor.name 
-      });
-
+      this.metrics.increment('payment.create.error', 1, { error: error.constructor.name });
       this.logger.error('Failed to create payment', error, {
         reference: paymentData?.reference,
         correlationId: this.correlationId
       });
-
-      if (error instanceof ValidationError) {
-        throw error;
-      }
-      if (error.message && error.message.includes('validation failed')) {
-        throw new ValidationError(error.message, { originalError: error });
-      }
-
-      if (error.response?.status === 422) {
-        throw new PaymentError('Payment validation failed', {
-          statusCode: error.response.status,
-          details: error.response.data,
-          correlationId: this.correlationId
-        });
-      }
-
-      throw new PaymentError('Failed to create payment', {
-        originalError: error.message,
-        correlationId: this.correlationId
-      });
+      throw this.toPesakitError(error, 'Failed to create payment');
     }
   }
 
-  /**
-   * Register IPN URL with PesaPal API 3.0
-   */
-  async registerIpnUrl(ipnUrl, notificationType = 'GET') {
-    const timer = this.metrics.startTimer('ipn.register');
-    
-    try {
-      this.logger.info('Registering IPN URL', {
-        url: ipnUrl,
-        notificationType,
-        correlationId: this.correlationId
-      });
-
-      const token = await this.getOAuthToken();
-
-      const response = await this.circuitBreaker.protect(
-        'ipn_register',
-        this.makeIpnRegistrationRequest.bind(this),
-        token,
-        ipnUrl,
-        notificationType
-      );
-
-      const ipnId = response.data.ipn_id;
-      
-      this.logger.info('IPN URL registered successfully', {
-        ipnId,
-        correlationId: this.correlationId
-      });
-
-      timer.end();
-      return ipnId;
-
-    } catch (error) {
-      timer.end();
-      this.logger.error('Failed to register IPN URL', error, {
-        correlationId: this.correlationId
-      });
-      throw error;
-    }
-  }
-
-  /**
-   * Make IPN registration request
-   */
-  async makeIpnRegistrationRequest(token, ipnUrl, notificationType) {
-    return axios.post(
-      `${this.baseURL}/api/URLSetup/RegisterIPN`,
-      {
-        url: ipnUrl,
-        ipn_notification_type: notificationType
-      },
-      {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-          'User-Agent': 'Pesakit/2.0.0',
-          'X-Correlation-ID': this.correlationId
-        },
-        timeout: this.config.timeout
-      }
-    );
-  }
-
-  /**
-   * Make payment request using PesaPal API 3.0
-   */
-  async makePaymentRequest(token, paymentData) {
-    // Transform data to PesaPal API 3.0 format
-    const pesapalPayload = {
-      id: paymentData.reference,
-      currency: paymentData.currency,
-      amount: paymentData.amount,
-      description: paymentData.description,
-      callback_url: paymentData.callbackUrl,
-      notification_id: paymentData.notificationId,
+  static toOrderPayload(data) {
+    const billing = data.billingAddress || {};
+    const payload = {
+      id: data.reference,
+      currency: data.currency,
+      amount: data.amount,
+      description: data.description,
+      callback_url: data.callbackUrl,
+      notification_id: data.notificationId,
       billing_address: {
-        email_address: paymentData.email,
-        phone_number: paymentData.phoneNumber,
-        first_name: paymentData.firstName,
-        last_name: paymentData.lastName,
-        country_code: 'KE'
+        email_address: data.email,
+        phone_number: data.phoneNumber,
+        country_code: billing.countryCode,
+        first_name: data.firstName,
+        middle_name: data.middleName,
+        last_name: data.lastName,
+        line_1: billing.line1,
+        line_2: billing.line2,
+        city: billing.city,
+        state: billing.state,
+        postal_code: billing.postalCode,
+        zip_code: billing.zipCode
       }
     };
-
-    return axios.post(
-      `${this.baseURL}/api/Transactions/SubmitOrderRequest`,
-      pesapalPayload,
-      {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-          'User-Agent': 'Pesakit/2.0.0',
-          'X-Correlation-ID': this.correlationId
-        },
-        timeout: this.config.timeout
-      }
-    );
+    if (data.cancellationUrl) payload.cancellation_url = data.cancellationUrl;
+    if (data.redirectMode) payload.redirect_mode = data.redirectMode;
+    if (data.branch) payload.branch = data.branch;
+    if (data.subscription) {
+      payload.account_number = data.subscription.accountNumber;
+      payload.subscription_details = {
+        start_date: data.subscription.startDate,
+        end_date: data.subscription.endDate,
+        frequency: data.subscription.frequency
+      };
+    }
+    return payload;
   }
 
   /**
-   * Verify payment status with comprehensive error handling
+   * Get transaction status. Always call this from your IPN and callback
+   * handlers; never trust the redirect alone.
    */
   async verifyPayment(orderTrackingId) {
     const timer = this.metrics.startTimer('payment.verify');
-    
     try {
-      // Validate order tracking ID
-      const validatedId = validators.validateOrderTrackingId(orderTrackingId);
-      
-      this.logger.info('Verifying payment', {
-        orderTrackingId: validatedId,
-        correlationId: this.correlationId
+      const id = validators.validateOrderTrackingId(orderTrackingId);
+      await this.checkRateLimit('verify');
+
+      const body = await this.request('verify', {
+        method: 'GET',
+        path: '/api/Transactions/GetTransactionStatus',
+        params: { orderTrackingId: id }
       });
 
-      // Check rate limiting
-      const rateLimitKey = `verify:${SecurityUtils.hashData(this.config.consumerKey)}`;
-      await this.rateLimiter.isAllowed(rateLimitKey);
-
-      // Get OAuth token
-      const token = await this.getOAuthToken();
-
-      // Make verification request through circuit breaker
-      const response = await this.circuitBreaker.protect(
-        'verify',
-        this.makeVerificationRequest.bind(this),
-        token,
-        validatedId
-      );
-
-      const verification = {
-        status: response.data.payment_status_description,
-        method: response.data.payment_method,
-        amount: response.data.amount,
-        currency: response.data.currency,
-        merchantReference: response.data.merchant_reference,
-        timestamp: new Date().toISOString()
-      };
-
-      this.logger.info('Payment verification completed', {
-        orderTrackingId: validatedId,
-        status: verification.status,
-        correlationId: this.correlationId
-      });
+      const verification = Pesakit.toVerification(body);
 
       this.metrics.increment('payment.verify.success');
-      this.metrics.increment('payment.status', 1, { 
-        status: verification.status.toLowerCase() 
-      });
-
+      this.metrics.increment('payment.status', 1, { status: verification.status.toLowerCase() });
       timer.end();
       return verification;
-
     } catch (error) {
       timer.end();
-      this.metrics.increment('payment.verify.error', 1, { 
-        error: error.constructor.name 
-      });
-
-      this.logger.error('Failed to verify payment', error, {
-        orderTrackingId,
-        correlationId: this.correlationId
-      });
-
-      if (error instanceof ValidationError) {
-        throw error;
-      }
-      if (error.message && error.message.includes('validation failed')) {
-        throw new ValidationError(error.message, { originalError: error });
-      }
-
-      if (error.response?.status === 404) {
-        throw new PaymentError('Payment not found', {
-          statusCode: 404,
-          orderTrackingId,
-          correlationId: this.correlationId
-        });
-      }
-
-      throw new PaymentError('Failed to verify payment', {
-        originalError: error.message,
-        orderTrackingId,
-        correlationId: this.correlationId
-      });
+      this.metrics.increment('payment.verify.error', 1, { error: error.constructor.name });
+      this.logger.error('Failed to verify payment', error, { orderTrackingId, correlationId: this.correlationId });
+      throw this.toPesakitError(error, 'Failed to verify payment', { orderTrackingId });
     }
   }
 
-  /**
-   * Make verification request using PesaPal API 3.0
-   */
-  async makeVerificationRequest(token, orderTrackingId) {
-    return axios.get(
-      `${this.baseURL}/api/Transactions/GetTransactionStatus`,
-      {
-        params: { orderTrackingId },
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-          'User-Agent': 'Pesakit/2.0.0',
-          'X-Correlation-ID': this.correlationId
-        },
-        timeout: this.config.timeout
-      }
-    );
-  }
-
-  /**
-   * Create secure IPN handler with timing-safe signature validation
-   */
-  createIpnHandler(options = {}) {
-    const {
-      onSuccess = null,
-      onFailure = null,
-      validateSignature = true
-    } = options;
-
-    return async (req, res, next) => {
-      const ipnCorrelationId = SecurityUtils.generateCorrelationId();
-      const ipnLogger = this.logger.child({ ipnCorrelationId });
-      const timer = this.metrics.startTimer('ipn.process');
-
-      try {
-        ipnLogger.info('Processing IPN notification', {
-          headers: SecurityUtils.sanitizeForLogging(req.headers),
-          body: SecurityUtils.sanitizeForLogging(req.body)
-        });
-
-        // Validate IPN data structure
-        const validatedData = validators.validateIpnData(req.body);
-
-        if (validateSignature) {
-          // Validate HMAC signature using timing-safe comparison
-          const signature = req.headers['x-pesapal-signature'];
-          if (!signature) {
-            throw new SignatureError('Missing signature header');
-          }
-
-          const payload = JSON.stringify(req.body);
-          const isValid = SecurityUtils.verifyHmacSignature(
-            payload,
-            signature,
-            this.config.consumerSecret
-          );
-
-          if (!isValid) {
-            this.metrics.increment('ipn.signature_invalid');
-            ipnLogger.security('Invalid IPN signature detected', {
-              signature: '[REDACTED]',
-              sourceIP: req.ip
-            });
-            
-            throw new SignatureError('Invalid signature');
-          }
-
-          this.metrics.increment('ipn.signature_valid');
-        }
-
-        // Verify payment status
-        const verification = await this.verifyPayment(validatedData.orderTrackingId);
-
-        if (verification.status === validatedData.status) {
-          ipnLogger.info('IPN verification successful', {
-            orderTrackingId: validatedData.orderTrackingId,
-            status: validatedData.status
-          });
-
-          this.metrics.increment('ipn.success');
-          
-          // Call success callback if provided
-          if (onSuccess) {
-            await onSuccess(validatedData, verification);
-          }
-
-          timer.end();
-          res.status(200).json({ 
-            status: 'success',
-            correlationId: ipnCorrelationId 
-          });
-        } else {
-          ipnLogger.warn('IPN status mismatch', {
-            orderTrackingId: validatedData.orderTrackingId,
-            ipnStatus: validatedData.status,
-            verifiedStatus: verification.status
-          });
-
-          this.metrics.increment('ipn.status_mismatch');
-          
-          // Call failure callback if provided
-          if (onFailure) {
-            await onFailure(validatedData, verification, 'status_mismatch');
-          }
-
-          timer.end();
-          res.status(400).json({ 
-            error: 'Status mismatch',
-            correlationId: ipnCorrelationId 
-          });
-        }
-
-      } catch (error) {
-        timer.end();
-        this.metrics.increment('ipn.error', 1, { error: error.constructor.name });
-
-        ipnLogger.error('IPN processing failed', error);
-
-        if (error instanceof SignatureError) {
-          res.status(401).json({ 
-            error: 'Invalid signature',
-            correlationId: ipnCorrelationId 
-          });
-        } else if (error instanceof ValidationError) {
-          res.status(400).json({ 
-            error: 'Invalid IPN data',
-            correlationId: ipnCorrelationId 
-          });
-        } else {
-          res.status(500).json({ 
-            error: 'Internal server error',
-            correlationId: ipnCorrelationId 
-          });
-        }
-
-        // Call failure callback if provided
-        if (onFailure) {
-          try {
-            await onFailure(req.body, null, error.message);
-          } catch (callbackError) {
-            ipnLogger.error('IPN failure callback error', callbackError);
-          }
-        }
-
-        if (next) {
-          next(error);
-        }
-      }
+  static toVerification(body) {
+    const code = typeof body.status_code === 'number' ? body.status_code : Number(body.status_code);
+    const status = STATUS_CODES[code] || String(body.payment_status_description || 'INVALID').toUpperCase();
+    return {
+      status,
+      statusCode: Number.isNaN(code) ? null : code,
+      isCompleted: status === 'COMPLETED',
+      orderTrackingId: body.order_tracking_id,
+      merchantReference: body.merchant_reference,
+      method: body.payment_method,
+      amount: body.amount,
+      currency: body.currency,
+      paymentAccount: body.payment_account,
+      confirmationCode: body.confirmation_code,
+      description: body.description,
+      message: body.message,
+      createdDate: body.created_date,
+      callbackUrl: body.call_back_url,
+      subscriptionTransactionInfo: body.subscription_transaction_info,
+      timestamp: new Date().toISOString(),
+      raw: body
     };
   }
 
   /**
-   * Get comprehensive health status
+   * Refund a completed transaction. `confirmationCode` comes from verifyPayment().
    */
+  async refundPayment({ confirmationCode, amount, username, remarks }) {
+    const timer = this.metrics.startTimer('payment.refund');
+    try {
+      const data = validators.validateRefund({ confirmationCode, amount, username, remarks });
+      await this.checkRateLimit('refund');
+      const body = await this.request('refund', {
+        path: '/api/Transactions/RefundRequest',
+        data: {
+          confirmation_code: data.confirmationCode,
+          amount: data.amount,
+          username: data.username,
+          remarks: data.remarks
+        }
+      });
+      timer.end();
+      this.metrics.increment('payment.refund.success');
+      return {
+        status: body.status,
+        message: body.message,
+        raw: body
+      };
+    } catch (error) {
+      timer.end();
+      this.metrics.increment('payment.refund.error', 1, { error: error.constructor.name });
+      this.logger.error('Failed to refund payment', error, { correlationId: this.correlationId });
+      throw this.toPesakitError(error, 'Failed to refund payment');
+    }
+  }
+
+  /**
+   * Cancel an order that has not yet completed.
+   */
+  async cancelOrder(orderTrackingId) {
+    const timer = this.metrics.startTimer('payment.cancel');
+    try {
+      const id = validators.validateOrderTrackingId(orderTrackingId);
+      await this.checkRateLimit('cancel');
+      const body = await this.request('cancel', {
+        path: '/api/Transactions/CancelOrder',
+        data: { order_tracking_id: id }
+      });
+      timer.end();
+      this.metrics.increment('payment.cancel.success');
+      return {
+        status: body.status,
+        message: body.message,
+        raw: body
+      };
+    } catch (error) {
+      timer.end();
+      this.metrics.increment('payment.cancel.error', 1, { error: error.constructor.name });
+      this.logger.error('Failed to cancel order', error, { orderTrackingId, correlationId: this.correlationId });
+      throw this.toPesakitError(error, 'Failed to cancel order', { orderTrackingId });
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* IPN                                                                  */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Parse a Pesapal IPN from an incoming request. Pesapal sends
+   * OrderTrackingId, OrderMerchantReference and OrderNotificationType
+   * as query params (GET) or a JSON body (POST).
+   */
+  static parseIpn(req) {
+    const source = { ...(req.query || {}), ...(req.body || {}) };
+    const pick = (...names) => {
+      for (const name of names) {
+        if (source[name] !== undefined && source[name] !== null && source[name] !== '') return source[name];
+      }
+      return undefined;
+    };
+    return validators.validateIpnData({
+      orderTrackingId: pick('OrderTrackingId', 'orderTrackingId', 'order_tracking_id'),
+      orderMerchantReference: pick('OrderMerchantReference', 'orderMerchantReference', 'order_merchant_reference'),
+      orderNotificationType: pick('OrderNotificationType', 'orderNotificationType', 'order_notification_type') || 'IPNCHANGE'
+    });
+  }
+
+  /**
+   * Express/Connect style IPN handler.
+   *
+   * Flow: parse the notification, call GetTransactionStatus, hand the
+   * verified result to `onNotification`, then reply with the JSON
+   * acknowledgement Pesapal expects. Any thrown error replies with
+   * status 500 so Pesapal retries.
+   */
+  createIpnHandler(options = {}) {
+    const { onNotification = null, onError = null } = options;
+
+    return async (req, res, next) => {
+      const ipnCorrelationId = SecurityUtils.generateCorrelationId();
+      const log = this.logger.child({ ipnCorrelationId });
+      const timer = this.metrics.startTimer('ipn.process');
+      let ipn = null;
+
+      try {
+        ipn = Pesakit.parseIpn(req);
+        log.info('Processing IPN', ipn);
+
+        const verification = await this.verifyPayment(ipn.orderTrackingId);
+
+        if (onNotification) {
+          await onNotification(verification, ipn);
+        }
+
+        this.metrics.increment('ipn.success');
+        timer.end();
+        res.status(200).json({
+          orderNotificationType: ipn.orderNotificationType,
+          orderTrackingId: ipn.orderTrackingId,
+          orderMerchantReference: ipn.orderMerchantReference,
+          status: 200
+        });
+      } catch (error) {
+        timer.end();
+        this.metrics.increment('ipn.error', 1, { error: error.constructor.name });
+        log.error('IPN processing failed', error);
+
+        if (onError) {
+          try {
+            await onError(error, ipn, req);
+          } catch (callbackError) {
+            log.error('IPN onError callback threw', callbackError);
+          }
+        }
+
+        const isBadRequest = error instanceof ValidationError;
+        res.status(isBadRequest ? 400 : 500).json({
+          orderNotificationType: ipn?.orderNotificationType,
+          orderTrackingId: ipn?.orderTrackingId,
+          orderMerchantReference: ipn?.orderMerchantReference,
+          status: isBadRequest ? 400 : 500
+        });
+
+        if (next && !isBadRequest) next(error);
+      }
+    };
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Ops                                                                  */
+  /* ------------------------------------------------------------------ */
+
   async getHealthStatus() {
     return this.healthChecker.check();
   }
 
-  /**
-   * Get metrics snapshot
-   */
   getMetrics() {
     return this.metrics.getMetrics();
   }
 
-  /**
-   * Get rate limit status
-   */
   getRateLimitStatus(key) {
     return this.rateLimiter.getStatus(key);
   }
 
-  /**
-   * Invalidate cached token
-   */
-  invalidateToken() {
-    this.tokenCache.invalidateToken(this.config.consumerKey);
-    this.logger.info('OAuth token invalidated', { correlationId: this.correlationId });
-  }
-
-  /**
-   * Get endpoint from error for metrics
-   */
-  getEndpointFromError(error) {
-    const url = error.config?.url || '';
-    if (url.includes('/auth/')) return 'auth';
-    if (url.includes('/payments/')) return 'payment';
-    if (url.includes('/transactions/')) return 'verify';
-    return 'unknown';
-  }
-
-  /**
-   * Cleanup resources
-   */
   destroy() {
-    this.logger.info('Destroying Pesakit client', { correlationId: this.correlationId });
-    
     this.circuitBreaker.shutdown();
     this.metrics.destroy();
     this.tokenCache.clear();
-    
-    this.logger.info('Pesakit client destroyed', { correlationId: this.correlationId });
+    this.tokenCache.close();
   }
 }
 
+export {
+  Pesakit,
+  STATUS_CODES,
+  PesakitError,
+  AuthenticationError,
+  ValidationError,
+  PaymentError,
+  NetworkError,
+  RateLimitError,
+  SignatureError,
+  ConfigurationError
+};
 export default Pesakit;
